@@ -38,8 +38,7 @@ tests/
 
 - Everything under `data/` except `data/sample/` is gitignored. Do not commit
   licensed price or fundamentals data until commercial-use licensing is confirmed.
-- Methodology provenance and ownership are not yet written down. Keep club
-  material out of this repo until they are.
+- Methodology provenance and ownership are not yet written down.
 
 ## Versioning
 
