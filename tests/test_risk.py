@@ -6,6 +6,7 @@ from advisor_engine.holdings import validate_holdings
 from advisor_engine.risk import (
     effective_number_of_bets,
     max_drawdown,
+    position_risk,
     risk_profile,
     sector_exposure,
     shrunk_covariance,
@@ -109,3 +110,30 @@ def test_negative_shares_rejected():
     )
     with pytest.raises(ValueError, match="short"):
         validate_holdings(df)
+
+
+def test_position_risk_shares_sum_to_one():
+    h = _holdings()
+    r = synthetic_returns(list(h["ticker"]), list(h["sector"]), n_periods=120)
+    cov, _ = shrunk_covariance(r[list(h["ticker"])])
+    pr = position_risk(h, cov)
+    assert sum(d["risk_share"] for d in pr) == pytest.approx(1.0)
+    assert [d["risk_share"] for d in pr] == sorted(
+        [d["risk_share"] for d in pr], reverse=True
+    )
+
+
+def test_position_risk_identical_assets_share_equally():
+    h = _holdings(n=3, sectors=["A", "A", "A"])
+    cov = np.full((3, 3), 0.02) + np.eye(3) * 0.02
+    pr = position_risk(h, cov)
+    for d in pr:
+        assert d["risk_share"] == pytest.approx(1 / 3)
+        assert d["risk_to_weight"] == pytest.approx(1.0)
+
+
+def test_position_risk_high_vol_asset_exceeds_weight():
+    h = _holdings(n=2, sectors=["A", "B"])
+    cov = np.array([[0.01, 0.0], [0.0, 0.09]])
+    pr = {d["ticker"]: d for d in position_risk(h, cov)}
+    assert pr["T1"]["risk_to_weight"] > 1 > pr["T0"]["risk_to_weight"]
