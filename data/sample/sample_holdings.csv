@@ -1,0 +1,13 @@
+ticker,shares,price,sector
+AAA,1200,185.00,Technology
+BBB,800,420.00,Technology
+CCC,300,950.00,Technology
+DDD,2500,52.00,Financials
+EEE,1800,61.00,Financials
+FFF,900,140.00,Health Care
+GGG,600,210.00,Health Care
+HHH,1500,75.00,Energy
+III,2200,38.00,Utilities
+JJJ,700,160.00,Consumer Staples
+KKK,500,320.00,Industrials
+LLL,1000,95.00,Consumer Discretionary

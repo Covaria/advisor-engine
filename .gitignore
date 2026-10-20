@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Data: may be licensed or proprietary. Keep it out of git.
+data/*
+!data/sample/
+!data/sample/**
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/*
+!.vscode/settings.json
