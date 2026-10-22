@@ -53,6 +53,94 @@ def effective_number_of_bets(weights: np.ndarray, cov: np.ndarray) -> dict:
     }
 
 
+def market_adjusted_concentration(
+    returns: pd.DataFrame,
+    weights: np.ndarray,
+    market: pd.Series | None = None,
+) -> dict:
+    """Split portfolio risk into a market component and a residual component.
+
+    Each asset is regressed (OLS) on a market factor: r_i = alpha_i + beta_i * m + e_i.
+    The portfolio's systematic variance is (w . beta)^2 * var(m); its residual
+    variance is w' Sigma_res w, with Sigma_res the Ledoit-Wolf shrunk covariance
+    of the residuals e. `residual_effective_bets` is the same entropy measure as
+    `effective_number_of_bets`, applied to Sigma_res, so it says how many
+    independent bets remain once the market is taken out.
+
+    The market factor is the equal-weighted mean return of the supplied tickers.
+    That is a stand-in for when no index series is available: it contains the
+    assets themselves, and the residuals then sum to zero across assets, so an
+    equal-weighted portfolio has almost no residual risk by construction. With
+    real data, pass a broad index series as `market` (indexed like `returns`).
+
+    `weights` must be in the same order as `returns.columns`.
+    """
+    if market is None:
+        m = returns.mean(axis=1)
+        proxy = "equal_weight_universe"
+    else:
+        m = market.reindex(returns.index)
+        if m.isna().any():
+            raise ValueError("Market series does not cover every return period.")
+        proxy = "provided"
+
+    R = returns.to_numpy()
+    mv = m.to_numpy()
+    # Population variance of the market factor (divide by n, matching the betas below).
+    m_dev = mv - mv.mean()
+    market_var = float(m_dev @ m_dev / len(m_dev))
+    if market_var <= 0:
+        raise ValueError("Market series has zero variance.")
+
+    # OLS slope per asset: cov(r_i, m) / var(m). The intercept is absorbed by
+    # demeaning, so the residuals have zero mean.
+    r_dev = R - R.mean(axis=0)
+    betas = (r_dev.T @ m_dev) / len(m_dev) / market_var
+    resid = r_dev - np.outer(m_dev, betas)
+
+    # Systematic risk is driven by the portfolio's net market beta; residual
+    # risk is what the market factor cannot explain.
+    port_beta = float(weights @ betas)
+    systematic = port_beta**2 * market_var
+    cov_res, _ = shrunk_covariance(pd.DataFrame(resid))
+    residual = float(weights @ cov_res @ weights)
+
+    return {
+        "portfolio_beta": port_beta,
+        "market_share_of_risk": float(systematic / (systematic + residual)),
+        "residual_effective_bets": effective_number_of_bets(weights, cov_res)["effective_bets"],
+        "market_proxy": proxy,
+    }
+
+
+def sector_level_concentration(holdings: pd.DataFrame, returns: pd.DataFrame) -> dict:
+    """Effective bets across sectors rather than individual positions.
+
+    Each sector's return series is the within-sector-weighted average of its
+    holdings' returns (a one-holding sector is just that holding). The sector
+    weights are the summed position weights.
+    """
+    w = holdings["weight"].to_numpy()
+    sectors = sorted(holdings["sector"].unique())
+    series = {}
+    sector_w = []
+    for s in sectors:
+        mask = (holdings["sector"] == s).to_numpy()
+        # Sector weight, which also renormalises the within-sector weights to sum to 1.
+        sw = w[mask].sum()
+        series[s] =returns[list(holdings.loc[mask, "ticker"])].to_numpy() @ (w[mask] / sw)
+        sector_w.append(sw)
+
+    sector_returns = pd.DataFrame(series, index=returns.index)
+    cov, _ = shrunk_covariance(sector_returns)
+    out = effective_number_of_bets(np.array(sector_w), cov)
+    return {
+        "sector_effective_bets": out["effective_bets"],
+        "n_sectors": len(sectors),
+        "top_component_share": out["top_component_share"],
+    }
+
+
 def position_risk(holdings: pd.DataFrame, cov: np.ndarray, corr_floor: float = 1e-12) -> list[dict]:
     """Per-position facts that back a "why is this position here / why does it matter".
 
@@ -128,6 +216,8 @@ def drawdown_sensitivity(
 
 @dataclass
 class RiskProfile:
+    """Container for everything `risk_profile` computes; `to_dict` gives the LLM-facing payload."""
+
     engine_version: str
     n_periods: int
     shrinkage: float
@@ -141,10 +231,16 @@ class RiskProfile:
         return asdict(self)
 
 
-def risk_profile(holdings: pd.DataFrame, returns: pd.DataFrame) -> RiskProfile:
+def risk_profile(
+    holdings: pd.DataFrame,
+    returns: pd.DataFrame,
+    market: pd.Series | None = None,
+) -> RiskProfile:
     """Build the risk profile for a validated holdings frame and a returns frame.
 
-    `returns` columns must cover every holdings ticker.
+    `returns` columns must cover every holdings ticker. `market` is an optional
+    broad-index return series used for the market-adjusted concentration; when
+    omitted, an equal-weighted mean of the holdings is used instead.
     """
     tickers = list(holdings["ticker"])
     missing = [t for t in tickers if t not in returns.columns]
@@ -164,12 +260,18 @@ def risk_profile(holdings: pd.DataFrame, returns: pd.DataFrame) -> RiskProfile:
     # Period-by-period portfolio return assuming constant weights.
     port_ret = pd.Series(r.to_numpy() @ weights, index=r.index)
 
-    top =holdings.nlargest(5, "weight")[["ticker", "weight", "sector"]]
+    # Existing concentration keys are kept as-is; the new views nest alongside them.
+    concentration = effective_number_of_bets(weights, cov)
+    concentration["market_adjusted"] = market_adjusted_concentration(r, weights, market)
+    concentration["sector_level"] = sector_level_concentration(holdings, r)
+
+    # Five biggest positions by weight (not by risk; see `positions` for risk ranking).
+    top = holdings.nlargest(5, "weight")[["ticker", "weight", "sector"]]
     return RiskProfile(
         engine_version=__version__,
         n_periods=int(len(r)),
         shrinkage=shrink,
-        concentration=effective_number_of_bets(weights, cov),
+        concentration=concentration,
         sector_exposure=sector_exposure(holdings),
         drawdown=drawdown_sensitivity(weights, cov, port_ret),
         largest_positions=top.to_dict("records"),

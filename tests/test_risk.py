@@ -2,13 +2,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from advisor_engine.holdings import validate_holdings
+import json
+from pathlib import Path
+
+from advisor_engine.holdings import load_holdings, validate_holdings
 from advisor_engine.risk import (
     effective_number_of_bets,
+    market_adjusted_concentration,
     max_drawdown,
     position_risk,
     risk_profile,
     sector_exposure,
+    sector_level_concentration,
     shrunk_covariance,
 )
 from advisor_engine.synthetic import synthetic_returns
@@ -137,3 +142,93 @@ def test_position_risk_high_vol_asset_exceeds_weight():
     cov = np.array([[0.01, 0.0], [0.0, 0.09]])
     pr = {d["ticker"]: d for d in position_risk(h, cov)}
     assert pr["T1"]["risk_to_weight"] > 1 > pr["T0"]["risk_to_weight"]
+
+
+SAMPLE = Path(__file__).resolve().parents[1] / "data" / "sample" / "sample_holdings.csv"
+
+
+def _factor_returns(betas, resid_vol, n_periods=2000, seed=1):
+    """Assets = beta * market + independent noise. Returns (returns, market)."""
+    rng = np.random.default_rng(seed)
+    market = pd.Series(rng.normal(0.005, 0.04, n_periods))
+    cols = {
+        f"T{i}": b * market + rng.normal(0.0, resid_vol, n_periods)
+        for i, b in enumerate(betas)
+    }
+    return pd.DataFrame(cols), market
+
+
+def test_market_adjusted_market_only_returns_is_nearly_all_market_risk():
+    r, _ = _factor_returns([0.8, 1.0, 1.2, 1.1], resid_vol=1e-4)
+    w = np.full(4, 0.25)
+    out = market_adjusted_concentration(r, w)
+    assert out["market_share_of_risk"] > 0.99
+    assert out["market_proxy"] == "equal_weight_universe"
+
+
+def test_market_adjusted_independent_residuals_give_n_bets():
+    n = 5
+    r, market = _factor_returns([1.0] * n, resid_vol=0.03)
+    w = np.full(n, 1 / n)
+    # Explicit market: the equal-weight proxy would make the residuals sum to
+    # zero, which is a property of the proxy rather than of the portfolio.
+    out = market_adjusted_concentration(r, w, market=market)
+    assert out["residual_effective_bets"] == pytest.approx(n, rel=0.05)
+
+
+def test_market_adjusted_invariant_to_ticker_order():
+    r, _ = _factor_returns([0.6, 0.9, 1.1, 1.4, 1.0], resid_vol=0.03)
+    w = np.array([0.4, 0.25, 0.15, 0.1, 0.1])
+    assert w.sum() == pytest.approx(1.0)
+    order = [3, 0, 4, 2, 1]
+    a = market_adjusted_concentration(r, w)
+    b = market_adjusted_concentration(r.iloc[:, order], w[order])
+    for k in ("portfolio_beta", "market_share_of_risk", "residual_effective_bets"):
+        assert a[k] == pytest.approx(b[k], rel=1e-9)
+
+
+def test_market_adjusted_uses_provided_market():
+    r, market = _factor_returns([2.0, 2.0, 2.0], resid_vol=0.01)
+    out = market_adjusted_concentration(r, np.full(3, 1 / 3), market=market)
+    assert out["market_proxy"] == "provided"
+    assert out["portfolio_beta"] == pytest.approx(2.0, rel=0.02)
+
+
+def test_market_adjusted_provided_market_must_cover_periods():
+    r, market = _factor_returns([1.0, 1.0], resid_vol=0.02, n_periods=100)
+    with pytest.raises(ValueError, match="cover"):
+        market_adjusted_concentration(r, np.full(2, 0.5), market=market.iloc[:50])
+
+
+def test_sector_level_handles_single_holding_sector():
+    h = _holdings(n=3, sectors=["A", "A", "B"])
+    r = synthetic_returns(list(h["ticker"]), list(h["sector"]), n_periods=60)
+    out = sector_level_concentration(h, r)
+    assert out["n_sectors"] == 2
+    assert 1.0 <= out["sector_effective_bets"] <= 2.0
+
+
+def test_sector_level_single_sector_is_one_bet():
+    h = _holdings(n=3, sectors=["A", "A", "A"])
+    r = synthetic_returns(list(h["ticker"]), list(h["sector"]), n_periods=60)
+    assert sector_level_concentration(h, r)["sector_effective_bets"] == pytest.approx(1.0)
+
+
+def test_risk_profile_keeps_old_keys_and_is_json_serialisable():
+    h = _holdings()
+    r = synthetic_returns(list(h["ticker"]), list(h["sector"]), n_periods=120)
+    c = risk_profile(h, r).to_dict()["concentration"]
+    for k in ("effective_bets", "n_positions", "top_component_share", "component_shares"):
+        assert k in c
+    assert {"portfolio_beta", "market_share_of_risk", "residual_effective_bets"} <= set(
+        c["market_adjusted"]
+    )
+    assert "sector_effective_bets" in c["sector_level"]
+    json.dumps(c)  # fails on numpy scalars
+
+
+def test_sample_portfolio_residual_bets_exceed_raw_bets():
+    h = load_holdings(str(SAMPLE))
+    r = synthetic_returns(list(h["ticker"]), list(h["sector"]))
+    c = risk_profile(h, r).to_dict()["concentration"]
+    assert c["market_adjusted"]["residual_effective_bets"] > c["effective_bets"]
