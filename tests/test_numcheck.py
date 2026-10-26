@@ -203,3 +203,81 @@ def test_verify_tolerance_floor_is_configurable():
     out = [{"s": 0.2113}]
     assert not verify("share 0.2115", out, rel_tol=0.0, abs_tol=0.0)["ok"]
     assert verify("share 0.2115", out, rel_tol=0.005, abs_tol=0.0005)["ok"]
+
+
+# --- sign ----------------------------------------------------------------------
+
+NEG = [{"d": -0.12}]
+POS = [{"d": 0.12}]
+
+
+@pytest.mark.parametrize(
+    "text, outputs, ok_",
+    [
+        ("a 12% gain", NEG, False),
+        ("a 12% loss", NEG, True),
+        ("a 12% loss", POS, False),
+        ("a 12% gain", POS, True),
+        ("-10.9%", [{"d": -0.109}], True),
+        ("−10.9%", [{"d": -0.109}], True),
+        ("-10.9%", [{"d": 0.109}], False),
+        ("shares fell by about 12.0%", NEG, True),
+        ("shares fell by about 12.0%", POS, False),
+        ("up 12.0%", NEG, False),
+        ("12.0% drawdown", NEG, True),
+        ("12.0% drawdown", POS, False),
+        ("12.0%", NEG, True),  # no direction stated
+        ("12.0%", POS, True),
+        # direction word too far away (more than 4 words) is ignored
+        ("a gain that was seen across all of the 12.0%", NEG, True),
+        # each clause gets its own direction
+        ("gain of 12.0% and loss of 12.0%", [{"a": 0.12}, {"b": -0.12}], True),
+        ("gain of 12.0% and loss of 12.0%", POS, False),
+    ],
+)
+def test_sign_agreement(text, outputs, ok_):
+    r = verify(text, outputs)
+    assert r["ok"] is ok_, r
+    if not ok_:
+        assert r["reasons"][r["unmatched"][0]] == "sign mismatch"
+
+
+def test_sign_mismatch_when_only_other_sign_exists_but_other_value_matches():
+    # +12 exists elsewhere in the tool output, so "a 12% gain" is backed.
+    assert verify("a 12% gain", [{"a": -0.12, "b": 0.12}])["ok"]
+
+
+# --- coarse figures ------------------------------------------------------------
+
+def test_coarse_integer_not_matched_by_near_value():
+    for v in (5.4, 4.6):
+        r = verify("5 bets", [{"effective_bets": v}])
+        assert not r["ok"]
+        assert r["reasons"]["5"] == "coarse match, unverified"
+
+
+def test_coarse_integer_exact_value_passes():
+    assert verify("5 bets", [{"effective_bets": 5.0, "other": 5.4}])["ok"]
+    assert verify("5 bets", [{"effective_bets": 5}])["ok"]
+
+
+def test_coarse_integer_list_length_passes():
+    assert verify("12 positions", [{"positions": [{}] * 12}])["ok"]
+
+
+def test_coarse_integer_closest_tool_number_passes():
+    assert verify("about 21% of risk", [{"s": 0.2113}])["ok"]
+    # 5.1 is the nearest tool number and within a quarter unit
+    assert verify("5 bets", [{"a": 5.2, "b": 5.1}])["ok"]
+    # 5.3 rounds to 5 but is not close enough
+    assert not verify("5 bets", [{"a": 5.3}])["ok"]
+
+
+def test_coarse_with_no_nearby_value_is_plain_no_match():
+    r = verify("40 bets", [{"a": 4.63}])
+    assert r["reasons"]["40"] == "no matching tool figure"
+
+
+def test_precise_figure_still_passes():
+    assert verify("1.29", [{"x": 1.2929}])["ok"]
+    assert verify("10.9%", [{"x": 0.109}])["ok"]

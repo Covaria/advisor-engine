@@ -220,9 +220,8 @@ def test_risk_profile_keeps_old_keys_and_is_json_serialisable():
     c = risk_profile(h, r).to_dict()["concentration"]
     for k in ("effective_bets", "n_positions", "top_component_share", "component_shares"):
         assert k in c
-    assert {"portfolio_beta", "market_share_of_risk", "residual_effective_bets"} <= set(
-        c["market_adjusted"]
-    )
+    # Equal-weight proxy: beta and market share are withheld, residual bets stay.
+    assert set(c["market_adjusted"]) == {"residual_effective_bets", "market_proxy"}
     assert "sector_effective_bets" in c["sector_level"]
     json.dumps(c)  # fails on numpy scalars
 
@@ -232,3 +231,20 @@ def test_sample_portfolio_residual_bets_exceed_raw_bets():
     r = synthetic_returns(list(h["ticker"]), list(h["sector"]))
     c = risk_profile(h, r).to_dict()["concentration"]
     assert c["market_adjusted"]["residual_effective_bets"] > c["effective_bets"]
+
+
+def test_drawdown_carries_period_label():
+    h = _holdings()
+    r = synthetic_returns(list(h["ticker"]), list(h["sector"]), n_periods=120)
+    assert risk_profile(h, r).to_dict()["drawdown"]["period_label"] == "monthly"
+    assert risk_profile(h, r, period_label="weekly").to_dict()["drawdown"]["period_label"] == "weekly"
+    assert "historical_max_drawdown" in risk_profile(h, r).to_dict()["drawdown"]
+
+
+def test_beta_and_market_share_only_with_provided_market():
+    h = _holdings()
+    r = synthetic_returns(list(h["ticker"]), list(h["sector"]), n_periods=120)
+    market = r.mean(axis=1) + 0.001 * pd.Series(np.arange(len(r)) % 7, index=r.index)
+    m = risk_profile(h, r, market=market).to_dict()["concentration"]["market_adjusted"]
+    assert m["market_proxy"] == "provided"
+    assert {"portfolio_beta", "market_share_of_risk", "residual_effective_bets"} <= set(m)

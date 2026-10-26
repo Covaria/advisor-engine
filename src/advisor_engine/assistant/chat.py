@@ -44,7 +44,22 @@ def _load_env() -> None:
     load_dotenv()
 
 
+def llm_mode() -> str:
+    """"mock" or "anthropic". ADVISOR_LLM wins; otherwise live only if an API key is set."""
+    _load_env()
+    mode = os.environ.get("ADVISOR_LLM", "").strip().lower()
+    if mode in ("mock", "anthropic"):
+        return mode
+    if mode:
+        raise ValueError(f"ADVISOR_LLM must be 'mock' or 'anthropic', not {mode!r}.")
+    return "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "mock"
+
+
 def _make_client():
+    if llm_mode() == "mock":
+        from .mock_client import MockClient  # no network, no anthropic import
+
+        return MockClient()
     try:
         import anthropic
     except ImportError as e:
@@ -93,8 +108,9 @@ def run_turn(
 ) -> TurnResult:
     """Answer one user message. `history` is the `.history` of the previous result."""
     _load_env()
-    model = model or os.environ.get("ADVISOR_MODEL", DEFAULT_MODEL)
     client = client or _make_client()
+    # A client may name itself (the mock does), so the audit log never claims a real model.
+    model = model or getattr(client, "model_name", None) or os.environ.get("ADVISOR_MODEL", DEFAULT_MODEL)
     firm_profile = firm_profile if firm_profile is not None else prompts.FIRM_PROFILE
 
     system = prompts.build_system_prompt(firm_profile)

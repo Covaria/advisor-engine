@@ -20,7 +20,11 @@ def synthetic_returns(
     sector_vol: float = 0.03,
     idio_vol: float = 0.05,
 ) -> pd.DataFrame:
-    """Monthly-style returns: market factor + sector factor + idiosyncratic noise."""
+    """Monthly-style returns: market factor + sector factor + idiosyncratic noise.
+
+    Each row is one period; treat it as monthly, which matches the default
+    `period_label` of `risk_profile`. Pass a different label there if the data differs.
+    """
     rng = np.random.default_rng(seed)
     unique_sectors = sorted(set(sectors))
 

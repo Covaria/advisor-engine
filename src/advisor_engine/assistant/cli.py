@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from ._paths import DEFAULT_HOLDINGS
-from .chat import run_turn
+from .chat import llm_mode, run_turn
 from .tools import resolve_holdings_path
 
 
@@ -22,6 +22,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
+    try:
+        mode = llm_mode()
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    label = "MOCK (offline, no API calls)" if mode == "mock" else "LIVE (Anthropic API)"
+    print(f"Mode: {label}")
     print(f"Holdings: {holdings}\nAsk about the portfolio's risk. /quit to exit.")
     history: list = []
     while True:

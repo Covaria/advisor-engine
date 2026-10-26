@@ -324,3 +324,12 @@ def test_default_audit_path_is_under_gitignored_data_dir():
     assert AUDIT_PATH.is_relative_to(DATA_DIR) and DATA_DIR.name == "data"
     ignore = (DATA_DIR.parent / ".gitignore").read_text()
     assert "data/*" in ignore and "!data/audit" not in ignore
+
+
+def test_system_prompt_style_rules():
+    p = prompts.SYSTEM_PROMPT
+    assert "1-2 sentence" in p and "more detail" in p
+    assert "Never mention internal field names" in p
+    assert "how much risk it adds relative to its size" in p
+    assert "how closely it moves with the rest" in p
+    assert "period_label" in p

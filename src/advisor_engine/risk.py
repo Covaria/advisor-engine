@@ -198,12 +198,16 @@ def drawdown_sensitivity(
     cov: np.ndarray,
     portfolio_returns: pd.Series,
     z: float = 2.33,
+    period_label: str = "monthly",
 ) -> dict:
     """Two views of downside.
 
     - historical_max_drawdown: worst drawdown in the supplied return history.
     - stress_loss_1_in_100: parametric one-period loss at ~99% confidence
       using the shrunk covariance (z=2.33), ignoring the mean.
+
+    `period_label` names the length of one return period ("monthly" by default).
+    Every figure here is per that period, so it travels with them.
     """
     # Portfolio volatility: sqrt(w' Cov w), in the same period units as the returns.
     port_vol = float(np.sqrt(weights @ cov @ weights))
@@ -211,6 +215,7 @@ def drawdown_sensitivity(
         "historical_max_drawdown": max_drawdown(portfolio_returns),
         "period_volatility": port_vol,
         "stress_loss_1_in_100": -z * port_vol,
+        "period_label": period_label,
     }
 
 
@@ -235,12 +240,14 @@ def risk_profile(
     holdings: pd.DataFrame,
     returns: pd.DataFrame,
     market: pd.Series | None = None,
+    period_label: str = "monthly",
 ) -> RiskProfile:
     """Build the risk profile for a validated holdings frame and a returns frame.
 
     `returns` columns must cover every holdings ticker. `market` is an optional
     broad-index return series used for the market-adjusted concentration; when
     omitted, an equal-weighted mean of the holdings is used instead.
+    `period_label` is the length of one return period, reported with the drawdown figures.
     """
     tickers = list(holdings["ticker"])
     missing = [t for t in tickers if t not in returns.columns]
@@ -262,7 +269,13 @@ def risk_profile(
 
     # Existing concentration keys are kept as-is; the new views nest alongside them.
     concentration = effective_number_of_bets(weights, cov)
-    concentration["market_adjusted"] = market_adjusted_concentration(r, weights, market)
+    adjusted = market_adjusted_concentration(r, weights, market)
+    if adjusted["market_proxy"] == "equal_weight_universe":
+        # With the equal-weight stand-in the "market" is made of the holdings themselves,
+        # so beta and market share of risk are artifacts of the construction and would
+        # mislead. Only report them against a real market series.
+        del adjusted["portfolio_beta"], adjusted["market_share_of_risk"]
+    concentration["market_adjusted"] = adjusted
     concentration["sector_level"] = sector_level_concentration(holdings, r)
 
     # Five biggest positions by weight (not by risk; see `positions` for risk ranking).
@@ -273,7 +286,7 @@ def risk_profile(
         shrinkage=shrink,
         concentration=concentration,
         sector_exposure=sector_exposure(holdings),
-        drawdown=drawdown_sensitivity(weights, cov, port_ret),
+        drawdown=drawdown_sensitivity(weights, cov, port_ret, period_label=period_label),
         largest_positions=top.to_dict("records"),
         positions=position_risk(holdings, cov),
     )
