@@ -54,7 +54,9 @@ src/advisor_engine/
         mock_client.py offline stand-in for the Anthropic client (templated replies)
         cli.py         terminal REPL (`python -m advisor_engine.assistant`)
     ui/app.py          Streamlit demo; lays out engine output, computes nothing
+    ui/theme.py        KVS stylesheet + escaped HTML builders (cards, bars, audit panel)
 data/sample/           synthetic portfolios, the only committed data
+.streamlit/config.toml KVS palette when running `streamlit run` from the repo root
 tests/                 one test file per module area
 ```
 
@@ -100,6 +102,11 @@ every turn --append_audit--> data/audit/audit.jsonl
 - Displays engine output only. Any figure shown goes through the same
   `get_risk_profile` tool (so the path rules and audit log apply). Uploads are
   validated and saved to `data/uploads/`.
+- Styling lives in `ui/theme.py`. Its builders take strings already formatted from
+  engine output and HTML-escape them (tickers and sectors can come from uploads). Model
+  replies are rendered with plain `st.markdown`, never with `unsafe_allow_html`.
+- Mockup sections the engine can't back yet (strategy options, client risk level,
+  adviser sign-in, named risk factors) are left out rather than filled with placeholders.
 
 ### Tests
 - Tests never hit the network. Assistant tests use a scripted `FakeClient`; UI tests

@@ -9,19 +9,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
+from advisor_engine import __version__
 from advisor_engine.assistant._paths import DATA_DIR, DEFAULT_HOLDINGS, REPO_ROOT
 from advisor_engine.assistant.audit import append_audit
-from advisor_engine.assistant.chat import llm_mode, run_turn
+from advisor_engine.assistant.chat import DEFAULT_MODEL, llm_mode, run_turn
 from advisor_engine.assistant.mock_client import MockClient
 from advisor_engine.assistant.numcheck import verify
 from advisor_engine.assistant.tools import execute_tool
 from advisor_engine.holdings import load_holdings
+from advisor_engine.ui import theme
 
 SAMPLE_DIR = DATA_DIR / "sample"
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -41,8 +44,19 @@ TONES = {
     "Warm and client-friendly": "warm and client-friendly",
 }
 DRAFT_REQUEST = "Please write a client-ready explanation of this portfolio's risk, for my review."
+# One-click follow-ups under the chat (label -> question sent to the assistant).
+FOLLOW_UPS = {
+    "Reasoning for the top position": "Why is the largest risk contributor a concern?",
+    "Stress test a severe period": "What is the stress loss in a severe period?",
+    "Sector exposure": "What is my sector exposure?",
+}
+# Plain names for the engine tools, shown as "Used" chips on each reply.
+TOOL_LABELS = {"get_risk_profile": "Risk profile"}
+FOOTER = ("Decision support for registered advisers. Not investment advice. Every figure on "
+          "this screen is computed by the engine; returns are synthetic and illustrative.")
 
-st.set_page_config(page_title="Advisor Engine demo", layout="wide")
+st.set_page_config(page_title="KVS · Advisor Engine", layout="wide")
+theme.inject()
 
 
 # --- engine access ---------------------------------------------------------------------
@@ -116,14 +130,39 @@ def how_checked(msg: dict) -> None:
                 st.code(call["output"])
 
 
+def source_lines(tool_calls: list[dict]) -> list[str]:
+    """One provenance line per successful tool call, read from that call's own output."""
+    lines = []
+    for call in tool_calls:
+        if call.get("is_error"):
+            continue
+        try:
+            out = json.loads(call["output"])
+        except ValueError:
+            continue
+        sha = (call.get("holdings_sha256") or "")[:8]
+        lines.append(
+            f"{TOOL_LABELS.get(call['name'], call['name'])} · {out.get('n_periods')} "
+            f"{out.get('drawdown', {}).get('period_label', '')} {out.get('returns_source')} returns"
+            f" · engine v{out.get('engine_version', __version__)}"
+            + (f" · holdings {sha}" if sha else "")
+        )
+    return lines
+
+
 def render_message(msg: dict) -> None:
     with st.chat_message(msg["role"]):
         if msg["role"] == "user":
             st.markdown(msg["content"])
             return
+        used = list(dict.fromkeys(TOOL_LABELS.get(c["name"], c["name"]) for c in msg["tool_calls"]))
+        if used:
+            theme.html(theme.chips("Used", used))
         if not msg["blocked"]:
             st.markdown(msg["content"])
         badge(msg)
+        if not msg["blocked"] and (lines := source_lines(msg["tool_calls"])):
+            theme.html(theme.sources(lines))
         how_checked(msg)
 
 
@@ -147,6 +186,7 @@ is_mock = mode == "mock"
 # --- sidebar ---------------------------------------------------------------------------------
 
 with st.sidebar:
+    theme.html(theme.brand())
     st.header("Portfolio")
     picker = st.container()
     with st.expander("Upload a holdings CSV"):
@@ -195,15 +235,6 @@ if ss.get("last_portfolio") != portfolio:  # old answers belong to the old portf
     ss.last_portfolio = portfolio
 
 
-# --- banner ----------------------------------------------------------------------------------
-
-st.title("Advisor Engine")
-if is_mock:
-    st.info("**MOCK** · no API calls, replies are scripted · **Synthetic data, illustrative only**")
-else:
-    st.warning("**LIVE** · questions are sent to the Anthropic API · **Synthetic data, illustrative only**")
-
-
 # --- engine data for the panels ------------------------------------------------------------------
 
 abs_path = str(REPO_ROOT / portfolio)
@@ -212,6 +243,7 @@ if tool_failed:
     st.error(tool_text)
     st.stop()
 data = json.loads(tool_text)
+ss.setdefault("logged", 0)  # audit lines written by this browser session
 if (portfolio, sha) not in ss.viewed:  # one audit entry per portfolio view
     ss.viewed.add((portfolio, sha))
     append_audit({
@@ -220,6 +252,38 @@ if (portfolio, sha) not in ss.viewed:  # one audit entry per portfolio view
                         "output": tool_text, "is_error": False, "holdings_sha256": sha}],
         "reply": None, "verification": None, "blocked": False,
     })
+    ss.logged += 1
+conc = data["concentration"]
+dd = data["drawdown"]
+label = dd["period_label"]
+
+
+# --- header ----------------------------------------------------------------------------------
+
+title = (REPO_ROOT / portfolio).stem.replace("_", " ").replace("-", " ").strip().capitalize()
+subtitle = " · ".join(x for x in [objective.capitalize() if objective else "", f"{conc['n_positions']} holdings",
+                                   f"{tone.capitalize()} tone"] if x)
+theme.html(theme.header("Client analysis · illustrative sample data", title, subtitle))
+st.write("")
+if is_mock:
+    st.info("**MOCK** · no API calls, replies are scripted · **Synthetic data, illustrative only**")
+else:
+    st.warning("**LIVE** · questions are sent to the Anthropic API · **Synthetic data, illustrative only**")
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    theme.html(theme.card(
+        "Effective independent bets", f"{conc['effective_bets']:.1f}",
+        f"across {conc['n_positions']} holdings: how many separate bets the portfolio behaves like."))
+with c2:
+    theme.html(theme.card(
+        "Largest single source of risk", pct(conc["top_component_share"]),
+        "of total risk comes from one common factor shared by the holdings."))
+with c3:
+    theme.html(theme.card(
+        "1-in-100 stress loss", pct(abs(dd["stress_loss_1_in_100"])),
+        f"estimated loss over one {label} period in a severe scenario. Not a forecast."))
+st.write("")
 
 
 # --- chat actions (handled before drawing so the new messages render) ----------------------------------
@@ -235,6 +299,7 @@ def ask(text: str, is_draft: bool = False) -> None:
         ss.messages.append({"role": "assistant", "blocked": True, "content": f"Error: {e}",
                             "verification": {}, "tool_calls": []})
         return
+    ss.logged += 1
     ss.history = result.history
     ss.messages.append({
         "role": "assistant", "content": result.reply, "blocked": result.blocked,
@@ -259,16 +324,22 @@ with chat_col:
         for m in ss.messages:
             render_message(m)
 
-    prompt = st.chat_input("Ask a question")
+    prompt = st.chat_input("Describe the client or ask a follow-up")
     if prompt:
         ask(prompt)
         st.rerun()
-    if st.button("Draft client explanation"):
+    buttons = [c for _ in range(2) for c in st.columns(2)]  # 2 x 2 grid
+    if buttons[0].button("Draft client explanation", type="primary", use_container_width=True):
         ask(DRAFT_REQUEST, is_draft=True)
         st.rerun()
+    for col, (text, question) in zip(buttons[1:], FOLLOW_UPS.items()):
+        if col.button(text, use_container_width=True):
+            ask(question)
+            st.rerun()
+    st.caption("These are options to weigh, not a recommendation. Which to use is your call.")
 
     if ss.draft:
-        st.markdown("#### DRAFT for advisor review")
+        theme.html(theme.section("Draft explanation for the client", "Editable · yours to approve"))
         st.caption("Edit as needed. Approving records it in the audit log. Nothing is sent anywhere.")
         text = st.text_area("Draft", key="draft_text", height=300, label_visibility="collapsed")
         if ss.draft["approved"]:
@@ -286,14 +357,27 @@ with chat_col:
                     "edited": text != ss.draft["original"], "verification": check,
                     "blocked": False,
                 })
+                ss.logged += 1
                 ss.draft["approved"] = True
                 st.rerun()
 
 with panel_col:
-    t_over, t_pos, t_sec, t_dd = st.tabs(["Overview", "Positions", "Sectors", "Drawdown"])
-    conc = data["concentration"]
+    t_src, t_over, t_pos, t_sec, t_dd = st.tabs(
+        ["Risk sources", "Overview", "Positions", "Sectors", "Drawdown"])
     positions = pd.DataFrame(data["positions"])
 
+    with t_src:
+        shares = conc["component_shares"]
+        theme.html(theme.bars(
+            "Where the risk comes from",
+            "Share of the portfolio's risk by independent source, largest factor first.",
+            [("Largest common factor" if i == 0 else f"Factor {i + 1}", pct(x), x)
+             for i, x in enumerate(shares)],
+            f"Method: principal component analysis on a Ledoit-Wolf shrunk covariance of "
+            f"{data['n_periods']} {label} returns ({data['returns_source']}). Factors are "
+            "statistical, not named markets or styles. Every figure is computed by the engine, "
+            "not written by the language model.",
+        ))
     with t_over:
         a, b = st.columns(2)
         a.metric("Positions", conc["n_positions"])
@@ -357,8 +441,6 @@ with panel_col:
                    f"{conc['sector_level']['sector_effective_bets']:.1f} independent sector bets.")
 
     with t_dd:
-        dd = data["drawdown"]
-        label = dd["period_label"]
         a, b = st.columns(2)
         a.metric("Worst historical drop", pct(abs(dd["historical_max_drawdown"])),
                  help="Largest peak-to-trough loss in the return history analysed.")
@@ -367,3 +449,21 @@ with panel_col:
         st.metric(f"Typical {label} volatility", pct(dd["period_volatility"]))
         st.caption(f"All figures are on a {label} basis. They describe history and a stress "
                    "scenario; they are not forecasts.")
+
+    st.write("")
+    draft_state = ("Approved" if ss.draft and ss.draft["approved"]
+                   else "Awaiting your approval" if ss.draft else "No draft yet")
+    theme.html(theme.audit_panel(
+        [
+            ("Engine version", f"v{data.get('engine_version', __version__)}"),
+            ("Returns", f"{data['n_periods']} {label} · {data['returns_source']}"),
+            ("Holdings file", f"{portfolio.rsplit('/', 1)[-1]} · {sha[:8]}"),
+            ("Assistant", "mock (scripted)" if is_mock
+             else os.environ.get("ADVISOR_MODEL", DEFAULT_MODEL)),
+            ("Logged this session", f"{ss.logged} entries"),
+            ("Client draft", draft_state),
+        ],
+        "Every output is logged with its inputs, so you can show how an explanation was reached.",
+    ))
+
+theme.html(theme.footer(FOOTER))
