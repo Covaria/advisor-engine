@@ -62,3 +62,38 @@ def test_edit_with_invented_figure_cannot_be_approved(app):
     next(b for b in at.button if b.label == "Approve").click().run()
     assert "91.2%" in at.error[0].value
     assert all(r.get("event") != "draft_approved" for r in records(log))
+
+
+def markdown_text(at):
+    return "\n".join(m.value for m in at.markdown)
+
+
+def test_headline_cards_show_engine_figures(app):
+    at, _ = app
+    from advisor_engine.assistant._paths import DEFAULT_HOLDINGS
+    from advisor_engine.assistant.tools import execute_tool
+
+    conc = json.loads(execute_tool("get_risk_profile",
+                                   {"holdings_path": str(DEFAULT_HOLDINGS)}).text)["concentration"]
+    text = markdown_text(at)
+    assert "Effective independent bets" in text and f"{conc['effective_bets']:.1f}" in text
+    assert f"{conc['top_component_share']:.1%}" in text
+    assert "Where the risk comes from" in text and "Audit trail" in text
+
+
+def test_follow_up_button_shows_tools_used_and_sources(app):
+    at, log = app
+    next(b for b in at.button if b.label == "Stress test a severe period").click().run()
+    assert not at.exception and not at.error
+    rec = records(log)[-1]
+    assert rec["user_message"] == "What is the stress loss in a severe period?"
+    assert rec["verification"]["ok"]
+    text = markdown_text(at)
+    assert "Risk profile" in text and "engine v" in text and rec["holdings_sha256"][:8] in text
+
+
+def test_uploaded_names_are_escaped_in_html():
+    from advisor_engine.ui import theme
+
+    out = theme.card("<b>x</b>", "1.0", "<script>alert(1)</script>")
+    assert "<script>" not in out and "&lt;script&gt;" in out
