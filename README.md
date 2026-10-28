@@ -89,6 +89,18 @@ and `anthropic` with one (a key in `.env` counts). `ADVISOR_LLM=mock` forces the
 The terminal assistant (`python -m advisor_engine.assistant`) uses the same setting and
 prints the active mode.
 
+### Share a demo link (Streamlit Community Cloud)
+
+Vercel and other serverless hosts can't run Streamlit (it needs a long-running server with
+WebSockets). Streamlit Community Cloud can:
+
+1. At https://share.streamlit.io, choose **Create app** and pick this repo and branch.
+2. Main file path: `src/advisor_engine/ui/app.py`. It installs `requirements.txt`.
+3. Leave the secrets empty to run in mock mode. Adding `ANTHROPIC_API_KEY` there turns on
+   live mode for anyone with the link, and there is no sign-in yet.
+
+The audit log and uploads are written to the app's disk, which is wiped on restart.
+
 ## Layout
 
 ```
