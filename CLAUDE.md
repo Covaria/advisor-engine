@@ -24,13 +24,14 @@ data is confirmed.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"            # engine + pytest
-pip install -e ".[dev,llm,ui]"     # everything (anthropic, python-dotenv, streamlit)
+pip install -e ".[dev,llm,ui,api]" # everything (anthropic, streamlit, fastapi)
 
 pytest                             # full suite; never calls the real API
 pytest tests/test_risk.py -q       # one file
 python -m advisor_engine.demo      # print the sample risk profile as JSON
 python -m advisor_engine.assistant [--holdings data/<file>.csv]   # terminal chat
 streamlit run src/advisor_engine/ui/app.py                         # demo UI, :8501
+uvicorn advisor_engine.api.main:app --reload                       # API, :8000 (dev auth)
 ```
 
 Requires Python >= 3.10. `tests/test_ui.py` is skipped if Streamlit isn't installed.
@@ -55,6 +56,12 @@ src/advisor_engine/
         cli.py         terminal REPL (`python -m advisor_engine.assistant`)
     ui/app.py          Streamlit demo; lays out engine output, computes nothing
     ui/theme.py        KVS stylesheet + escaped HTML builders (cards, bars, audit panel)
+    api/
+        settings.py    env config; dev auth forces mock and refuses to run on Render
+        auth.py        current_user(): Supabase access token (JWKS/HS256) or X-Dev-User
+        store.py       LocalStore: firm-scoped clients, portfolios, drafts, audit
+        main.py        FastAPI routes over execute_tool / run_turn / verify
+docs/migration-plan.md React + FastAPI + Supabase plan and the decisions behind it
 data/sample/           synthetic portfolios, the only committed data
 .streamlit/config.toml KVS palette when running `streamlit run` from the repo root
 tests/                 one test file per module area
@@ -109,9 +116,23 @@ every turn --append_audit--> data/audit/audit.jsonl
 - Mockup sections the engine can't back yet (strategy options, client risk level,
   adviser sign-in, named risk factors) are left out rather than filled with placeholders.
 
+### API (`api/`)
+- Routes move engine output around; they compute nothing. Model replies only come from
+  `run_turn`, and draft approvals re-run `verify` on the edited text.
+- Every store read takes a `firm_id`; another firm's ids answer 404, never 403. Pass the
+  firm's directory as `data_dir` to `execute_tool` / `run_turn` so the path guard confines
+  the model to that firm, and its audit path (`<firm dir>/audit/`) so logs stay per firm.
+- Audit records from the API carry `adviser_id`, `firm_id` and, where relevant,
+  `client_id` / `portfolio_id` (via `run_turn(audit_extra=...)`).
+- Live model calls require `auth == "supabase"` (`Settings.llm`). Don't add another path to
+  the real client.
+- Responses never include server file paths (see `_tool_view`).
+
 ### Tests
 - Tests never hit the network. Assistant tests use a scripted `FakeClient`; UI tests
-  use Streamlit's `AppTest` with `ADVISOR_LLM=mock` and a temp `AUDIT_PATH`.
+  use Streamlit's `AppTest` with `ADVISOR_LLM=mock` and a temp `AUDIT_PATH`. API tests use
+  `create_app(Settings(auth="dev", store_dir=tmp_path))` and FastAPI's `TestClient`;
+  token tests sign HS256 tokens with a test secret.
 - Write audit output to `tmp_path` in tests (monkeypatch `audit.AUDIT_PATH` or pass
   `audit_path=`), never to the real `data/audit/`.
 - Run `pytest` before committing; the suite is fast (seconds).

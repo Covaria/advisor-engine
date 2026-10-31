@@ -102,6 +102,18 @@ WebSockets). Streamlit Community Cloud can:
 
 The audit log and uploads are written to the app's disk, which is wiped on restart.
 
+## API (for the React app, in progress)
+
+```bash
+pip install -e ".[dev,llm,api]"
+uvicorn advisor_engine.api.main:app --reload
+```
+
+Locally it runs with dev auth: send `X-Dev-User: <any name>` instead of signing in. Dev
+auth always uses the mock assistant. Setting `SUPABASE_URL` switches to Supabase sign-in
+(plus `SUPABASE_JWT_SECRET` on projects that still use the legacy shared secret). Data is
+stored per firm under `data/api/`. See `docs/migration-plan.md` for the full plan.
+
 ## Layout
 
 ```
