@@ -108,3 +108,12 @@ def test_compare_reports_after_minus_before_and_membership_changes():
 def test_comparing_a_profile_with_itself_changes_nothing():
     p = profile(H)
     assert all(r["change"] == 0 for r in compare_profiles(p, p)["headline"])
+
+
+def test_loss_rows_compare_sizes_so_a_smaller_loss_is_a_negative_change():
+    calm = holdings([("AAA", 60, 100, "Technology"), ("BBB", 40, 100, "Health Care"),
+                     ("UUU", 400, 100, "Utilities")])
+    c = compare_profiles(profile(H), profile(calm))
+    row = next(r for r in c["headline"] if r["key"] == "stress_loss_1_in_100")
+    assert row["kind"] == "loss" and row["before"] > 0 and row["after"] > 0
+    assert row["change"] == pytest.approx(row["after"] - row["before"])

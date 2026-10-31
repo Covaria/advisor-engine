@@ -16,8 +16,10 @@ calls engine tools and explains their output. Code enforces this (see "Number ch
 below) rather than trusting the prompt. Any change that lets a figure reach the advisor
 without coming from the engine breaks the product's main guarantee.
 
-Current status: MVP step 2 (risk profile). Returns are synthetic until licensed market
-data is confirmed.
+Current status: risk profile plus CFP tools (what-if, compare, stress scenarios, risk
+questionnaire), served by a FastAPI backend on Render with Supabase, and a React app in
+`web/`. Returns are synthetic until licensed market data is confirmed. The stress presets
+and questionnaire scoring are drafts pending compliance review.
 
 ## Commands
 
@@ -32,6 +34,8 @@ python -m advisor_engine.demo      # print the sample risk profile as JSON
 python -m advisor_engine.assistant [--holdings data/<file>.csv]   # terminal chat
 streamlit run src/advisor_engine/ui/app.py                         # demo UI, :8501
 uvicorn advisor_engine.api.main:app --reload                       # API, :8000 (dev auth)
+cd web && npm install && VITE_DEV_USER=alice npm run dev           # React app, :5173
+cd web && npm test && npm run build                                # web tests, typecheck + bundle
 ```
 
 Requires Python >= 3.10. `tests/test_ui.py` is skipped if Streamlit isn't installed.
@@ -44,6 +48,9 @@ src/advisor_engine/
     holdings.py        load/validate holdings CSV -> adds value and weight columns
     synthetic.py       market + sector factor model returns (stand-in for real data)
     risk.py            all risk math; risk_profile() -> RiskProfile.to_dict()
+    stress.py          preset/custom sector-shock scenarios (illustrative, uncalibrated)
+    questionnaire.py   six-question client risk score (draft method) + drawdown check
+    compare.py         before/after differences between two risk profiles
     demo.py            end-to-end run on data/sample/sample_holdings.csv
     assistant/
         _paths.py      REPO_ROOT, DATA_DIR, DEFAULT_HOLDINGS, AUDIT_PATH
@@ -62,6 +69,7 @@ src/advisor_engine/
         store.py       LocalStore: firm-scoped clients, portfolios, drafts, audit (dev, tests)
         supabase_store.py SupabaseStore: same methods on Postgres (RLS) + Storage
         main.py        FastAPI routes over execute_tool / run_turn / verify
+web/                   React app (see web/README.md); formats engine output, computes nothing
 docs/migration-plan.md React + FastAPI + Supabase plan and the decisions behind it
 supabase/migrations/   Postgres schema, row-level security, append-only audit (see supabase/README.md)
 data/sample/           synthetic portfolios, the only committed data
@@ -93,6 +101,10 @@ every turn --append_audit--> data/audit/audit.jsonl
   artifacts). Keep that behaviour unless a real index series is supplied.
 - Drawdown and volatility figures carry a `period_label` (default `"monthly"`).
 - Docstrings explain the method and its caveats; comments explain *why*. Match that.
+- Synthetic returns are seeded per series (market, sector, ticker), so a ticker's history
+  never depends on the other holdings. What-if and compare rely on that; keep it.
+- Before/after differences come from `compare.compare_profiles`, never from a caller.
+  Loss figures there are sizes (kind `"loss"`), so a smaller loss is a negative change.
 
 ### LLM layer (`assistant/`)
 - `execute_tool` never raises: errors come back as `ToolResult(..., is_error=True)`.
@@ -136,6 +148,14 @@ every turn --append_audit--> data/audit/audit.jsonl
 - Schema changes are new files in `supabase/migrations/` (never edit an applied one).
   Every table gets RLS keyed on `app.current_firm_id()`; add tests to
   `tests/test_supabase_store.py` that query without a firm filter.
+
+### Web (`web/`)
+- Shows API output only. `src/lib/format.ts` formats numbers; nothing in `web/` sums,
+  subtracts or derives a figure. Need a new figure? Add it to the engine and return it.
+- Engine runs from CFP tools (what-if, compare, stress, questionnaire) are audited by the
+  API; the browser never calls the model.
+- `VITE_*` variables ship to the browser: only the Supabase publishable key, never the
+  secret key.
 
 ### Tests
 - Tests never hit the network. Assistant tests use a scripted `FakeClient`; UI tests

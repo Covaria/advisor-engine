@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+/* KVS palette and type, from the client-analysis mockup. */
+@theme {
+  --color-paper: #f5efe4;
+  --color-card: #fdfaf3;
+  --color-ink: #1f1b16;
+  --color-muted: #5c554b;
+  --color-faint: #8a8276;
+  --color-rule: #e6dcc8;
+  --color-track: #efe5cf;
+  --color-gold: #b8952f;
+  --color-gold-dark: #8a6d1f;
+  --color-gold-soft: #f1e6c8;
+  --color-good: #3f6b3a;
+  --color-bad: #9a3324;
+  --font-serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-gold-dark);
+}
+
+.figure {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-ink);
+  background: var(--color-card);
+  padding: 6px 12px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn:hover { background: var(--color-gold-soft); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn-primary { background: var(--color-gold); border-color: var(--color-gold); color: var(--color-ink); font-weight: 600; }
+.btn-primary:hover { background: #c9a540; }
+.btn-dark { background: var(--color-ink); border-color: var(--color-ink); color: #fdfaf3; }
+.btn-dark:hover { background: #3a332b; }
+
+.input {
+  border: 1px solid var(--color-rule);
+  background: #fff;
+  padding: 6px 10px;
+  font-size: 14px;
+  width: 100%;
+}
+.input:focus { outline: 2px solid var(--color-gold); outline-offset: -1px; }
+
+table.data { width: 100%; font-size: 14px; border-collapse: collapse; }
+table.data th {
+  text-align: left; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--color-muted); font-weight: 500;
+  border-bottom: 1px solid var(--color-rule); padding: 8px 10px;
+}
+table.data td { border-bottom: 1px solid var(--color-rule); padding: 8px 10px; }
+table.data td.num, table.data th.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; }
+}

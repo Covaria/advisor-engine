@@ -22,12 +22,25 @@ project's JWKS and needs no JWT secret.
 The tests apply the same file to a plain Postgres (`tests/supabase_shim.sql` stands in
 for Supabase's `auth` schema), so what runs in CI is what runs here.
 
-## Apply the migration
+## Apply the migrations
 
-Either option works. Run it once per project.
+Each file in `migrations/` runs once per project, in name order. A second run of the
+same file fails with `42P07 relation ... already exists`; that only means it was already
+applied.
+
+| File | What it adds |
+|---|---|
+| `20261031000000_firm_scoped_schema.sql` | Tables, row-level security, audit log, `holdings` bucket |
+| `20261101000000_questionnaire_and_versions.sql` | `clients.questionnaire`, `portfolios.label` / `source` |
+
+Apply a new migration **before** merging the code that uses it: Render redeploys the API
+from `main`, and the new API reads the new columns.
+
+Either option works.
 
 **SQL Editor (no install):** in the Supabase dashboard, open **SQL Editor**, paste the
-whole migration file, and click **Run**. It should finish without errors.
+whole migration file, and click **Run**. It should finish without errors. Repeat for each
+file you haven't applied yet.
 
 **Supabase CLI:**
 

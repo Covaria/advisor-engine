@@ -2,6 +2,10 @@
 
 Every figure is read from the two engine outputs; the only arithmetic is the
 difference after - before, done here so no caller (UI or model) has to compute it.
+
+Loss figures (kind "loss") are compared as sizes: the profile stores them as negative
+returns, which would make a smaller loss read as a positive change. Here a loss of 9.3%
+after 9.6% is a change of -0.3%: the loss shrank.
 """
 
 from __future__ import annotations
@@ -14,8 +18,8 @@ HEADLINE = [
      "Independent bets after removing the market", "number"),
     (("concentration", "sector_level", "sector_effective_bets"), "Independent sector bets", "number"),
     (("drawdown", "period_volatility"), "Volatility per period", "fraction"),
-    (("drawdown", "stress_loss_1_in_100"), "1-in-100 stress loss", "fraction"),
-    (("drawdown", "historical_max_drawdown"), "Worst historical drop", "fraction"),
+    (("drawdown", "stress_loss_1_in_100"), "1-in-100 stress loss", "loss"),
+    (("drawdown", "historical_max_drawdown"), "Worst historical drop", "loss"),
     (("concentration", "n_positions"), "Positions", "count"),
 ]
 
@@ -31,6 +35,8 @@ def compare_profiles(before: dict, after: dict) -> dict:
     headline = []
     for path, label, kind in HEADLINE:
         b, a = float(_get(before, path)), float(_get(after, path))
+        if kind == "loss":
+            b, a = abs(b), abs(a)
         headline.append({"key": path[-1], "label": label, "kind": kind,
                          "before": b, "after": a, "change": a - b})
 
