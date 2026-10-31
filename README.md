@@ -78,7 +78,8 @@ streamlit run src/advisor_engine/ui/app.py
 
 The app opens at http://localhost:8501. A banner shows the mode (MOCK or LIVE) and that the
 data is synthetic. Pick or upload a portfolio in the sidebar (uploads are validated and saved
-to `data/uploads/`, which is gitignored), ask questions, and open "How this was checked" under
+to a per-session folder under `data/uploads/`, which is gitignored, so visitors never see
+each other's files), ask questions, and open "How this was checked" under
 any reply to see the engine output and the verification result. "Simulate invented number"
 makes the mock add a figure the engine never produced, so you can watch the reply get
 withheld. "Draft client explanation" produces an editable DRAFT; Approve records it in the

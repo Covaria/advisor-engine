@@ -101,7 +101,8 @@ every turn --append_audit--> data/audit/audit.jsonl
 ### UI (`ui/app.py`)
 - Displays engine output only. Any figure shown goes through the same
   `get_risk_profile` tool (so the path rules and audit log apply). Uploads are
-  validated and saved to `data/uploads/`.
+  validated and saved to `data/uploads/<random session id>/`; a session lists only
+  the samples and its own uploads.
 - Styling lives in `ui/theme.py`. Its builders take strings already formatted from
   engine output and HTML-escape them (tickers and sectors can come from uploads). Model
   replies are rendered with plain `st.markdown`, never with `unsafe_allow_html`.
