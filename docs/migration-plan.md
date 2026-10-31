@@ -56,7 +56,16 @@ legacy HS256 secret). Persistence is `LocalStore`, which Phase 2 replaces.
 - Remaining: apply the migration to the project (`supabase/README.md`) and set
   `SUPABASE_DB_URL` / `SUPABASE_SECRET_KEY` where the API runs.
 
-### Phase 3: React app matching Streamlit
+### Phases 3 and 4: React app with the CFP tools (built together)
+Built in one pass so the app's structure fits the tools from the start. Done:
+engine modules (`stress.py`, `questionnaire.py`, `compare.py`; synthetic returns seeded
+per ticker so what-if is meaningful, engine 0.2.0), API routes for each, a migration for
+questionnaire answers and labelled portfolio versions, and `web/` with every tab listed
+in `web/README.md`. Not yet: strategy options (needs an optimizer and real data), MFA
+enrolment screens, and "explain this" for what-if / stress results (needs new model
+tools so the number check covers them).
+
+### Phase 3 (original notes): React app matching Streamlit
 - Vite, React, TypeScript, React Router, TanStack Query, Supabase JS (sign-in only), Tailwind with the KVS tokens, Recharts.
 - Screens: sign-in / request access, clients list with recent clients, client analysis (headline cards, risk sources, positions, sectors, drawdown, chat with tool chips and sources, draft editor, audit panel).
 - Done when it does everything the Streamlit app does.

@@ -123,6 +123,13 @@ class LocalStore:
     def get_client(self, firm_id: str, client_id: str) -> dict | None:
         return self._state(firm_id)["clients"].get(client_id)
 
+    def save_questionnaire(self, firm_id: str, client_id: str, answers: dict) -> dict:
+        def fn(state):
+            c = state["clients"][client_id]
+            c.update(questionnaire=answers, questionnaire_updated_at=_now())
+            return c
+        return self._update(firm_id, fn)
+
     # --- portfolios ------------------------------------------------------------------
 
     def portfolio_csv(self, firm_id: str, portfolio_id: str) -> Path:
@@ -133,13 +140,14 @@ class LocalStore:
         return self.portfolio_csv(firm_id, portfolio_id)
 
     def add_portfolio(self, firm_id: str, client_id: str, adviser_id: str, filename: str,
-                      csv_bytes: bytes, sha256: str) -> dict:
+                      csv_bytes: bytes, sha256: str, label: str = "", source: str = "upload") -> dict:
         pid = _new_id()
         path = self.portfolio_csv(firm_id, pid)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(csv_bytes)
         record = {"id": pid, "firm_id": firm_id, "client_id": client_id, "filename": filename,
-                  "sha256": sha256, "uploaded_by": adviser_id, "created_at": _now()}
+                  "sha256": sha256, "uploaded_by": adviser_id, "created_at": _now(),
+                  "label": label, "source": source}
         return self._update(firm_id, lambda s: s["portfolios"].setdefault(pid, record))
 
     def list_portfolios(self, firm_id: str, client_id: str) -> list[dict]:
@@ -165,6 +173,11 @@ class LocalStore:
 
     def get_draft(self, firm_id: str, draft_id: str) -> dict | None:
         return self._state(firm_id)["drafts"].get(draft_id)
+
+    def list_drafts(self, firm_id: str, portfolio_id: str) -> list[dict]:
+        ds = self._state(firm_id)["drafts"].values()
+        return sorted((d for d in ds if d["portfolio_id"] == portfolio_id),
+                      key=lambda d: d["created_at"], reverse=True)
 
     def save_draft(self, firm_id: str, draft: dict) -> None:
         self._update(firm_id, lambda s: s["drafts"].__setitem__(draft["id"], draft))

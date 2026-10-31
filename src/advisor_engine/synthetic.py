@@ -3,12 +3,25 @@
 Lets the prototype run end to end without licensed market data. Returns come
 from a simple market + sector factor model, so sectors are correlated within
 themselves. Replace with real data once licensing is confirmed.
+
+Each series is drawn from its own random stream, seeded from its name (the market,
+a sector, a ticker), so a ticker's history is the same in every portfolio it appears
+in. That matters for what-if and compare: removing one position must not change the
+history of the others, or the before/after difference would be noise.
 """
 
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 import pandas as pd
+
+
+def _rng(*parts: object) -> np.random.Generator:
+    """A random stream fixed by `parts`. Uses SHA-256, not hash(), which varies by process."""
+    digest = hashlib.sha256("|".join(map(str, parts)).encode()).digest()
+    return np.random.default_rng(int.from_bytes(digest[:8], "big"))
 
 
 def synthetic_returns(
@@ -24,15 +37,16 @@ def synthetic_returns(
 
     Each row is one period; treat it as monthly, which matches the default
     `period_label` of `risk_profile`. Pass a different label there if the data differs.
+    A ticker's series depends only on (ticker, sector, seed, n_periods and the vols),
+    never on which other tickers are requested.
     """
-    rng = np.random.default_rng(seed)
-    unique_sectors = sorted(set(sectors))
-
-    market = rng.normal(0.006, market_vol, n_periods)
-    sector_f = {s: rng.normal(0.0, sector_vol, n_periods) for s in unique_sectors}
+    market = _rng("market", seed).normal(0.006, market_vol, n_periods)
+    sector_f = {s: _rng("sector", s, seed).normal(0.0, sector_vol, n_periods)
+                for s in sorted(set(sectors))}
 
     cols = {}
     for t, s in zip(tickers, sectors):
+        rng = _rng("ticker", t, seed)
         beta = rng.uniform(0.7, 1.3)
         idio = rng.normal(0.0, idio_vol, n_periods)
         cols[t] = beta * market + sector_f[s] + idio

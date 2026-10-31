@@ -1,0 +1,105 @@
+// Shared building blocks. They lay out values they are given; none computes a figure.
+
+import type { ReactNode } from "react";
+import { ApiError } from "../lib/api";
+import { byKind, signed } from "../lib/format";
+import type { ComparisonRow } from "../lib/types";
+
+export function Panel({ title, tag, children, className = "" }: {
+  title?: ReactNode; tag?: ReactNode; children: ReactNode; className?: string;
+}) {
+  return (
+    <section className={`border border-rule bg-card p-5 ${className}`}>
+      {(title || tag) && (
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          {title && <h3 className="text-xl">{title}</h3>}
+          {tag && <span className="eyebrow">{tag}</span>}
+        </div>
+      )}
+      {children}
+    </section>
+  );
+}
+
+export function StatCard({ eyebrow, value, unit, note }: {
+  eyebrow: string; value: ReactNode; unit?: string; note?: ReactNode;
+}) {
+  return (
+    <div className="border border-rule border-t-[3px] border-t-gold bg-card px-5 py-4">
+      <div className="eyebrow">{eyebrow}</div>
+      <div className="my-1.5 font-serif text-[42px] leading-tight">
+        {value}
+        {unit && <span className="ml-1 text-xl text-faint">{unit}</span>}
+      </div>
+      {note && <div className="text-[13px] text-muted">{note}</div>}
+    </div>
+  );
+}
+
+/** A labelled horizontal bar. `fraction` (0..1) only sets the bar's drawn length. */
+export function Bar({ label, shown, fraction, tone = "gold" }: {
+  label: ReactNode; shown: string; fraction: number; tone?: "gold" | "bad";
+}) {
+  const width = `${Math.max(0, Math.min(1, fraction)) * 100}%`;
+  return (
+    <div className="my-2.5 text-sm">
+      <div className="mb-1 flex justify-between gap-3">
+        <span>{label}</span>
+        <span className="figure text-[13px]">{shown}</span>
+      </div>
+      <div className="h-2 bg-track">
+        <div className={`h-2 ${tone === "bad" ? "bg-bad/70" : "bg-gold"}`} style={{ width }} />
+      </div>
+    </div>
+  );
+}
+
+export function Chip({ children }: { children: ReactNode }) {
+  return <span className="bg-gold-soft px-2 py-0.5 text-xs">{children}</span>;
+}
+
+export function Loading({ what = "Loading" }: { what?: string }) {
+  return <div className="py-8 text-sm text-faint">{what}…</div>;
+}
+
+export function ErrorNote({ error }: { error: unknown }) {
+  if (!error) return null;
+  const msg = error instanceof ApiError || error instanceof Error ? error.message : String(error);
+  return <div className="my-3 border border-bad/40 bg-bad/5 px-3 py-2 text-sm text-bad">{msg}</div>;
+}
+
+export function Empty({ children }: { children: ReactNode }) {
+  return <div className="border border-dashed border-rule px-4 py-6 text-center text-sm text-muted">{children}</div>;
+}
+
+/** Engine comparison rows: before, after and the engine's own change figure. */
+export function ComparisonTable({ rows, beforeLabel = "Before", afterLabel = "After" }: {
+  rows: ComparisonRow[]; beforeLabel?: string; afterLabel?: string;
+}) {
+  return (
+    <table className="data">
+      <thead>
+        <tr><th>Measure</th><th className="num">{beforeLabel}</th><th className="num">{afterLabel}</th><th className="num">Change</th></tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.key}>
+            <td>{r.label}</td>
+            <td className="num">{byKind(r.kind, r.before)}</td>
+            <td className="num">{byKind(r.kind, r.after)}</td>
+            <td className="num">{signed(byKind(r.kind, r.change), r.change)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+export function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block text-sm">
+      <span className="mb-1 block font-semibold">{label}</span>
+      {children}
+    </label>
+  );
+}

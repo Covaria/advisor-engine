@@ -212,3 +212,116 @@ def test_engine_tool_cannot_read_another_firms_file(api):
     assert res.is_error and "must be inside" in res.text
     rel = f"{p['firm_id']}/portfolios/{p['id']}.csv"  # relative to the firms/ folder
     assert execute_tool("get_risk_profile", {"holdings_path": rel}, data_dir=bob_dir).is_error
+
+
+# --- CFP tools -----------------------------------------------------------------------------
+
+EDITED = [{"ticker": "AAA", "shares": 100, "price": 50, "sector": "Technology"},
+          {"ticker": "BBB", "shares": 200, "price": 30, "sector": "Health Care"},
+          {"ticker": "ZZZ", "shares": 100, "price": 40, "sector": "Utilities"}]
+
+
+def test_holdings_round_trip_and_edits_save_as_a_new_version(api):
+    client, store = api
+    c, p = setup_portfolio(client)
+    rows = client.get(f"/portfolios/{p['id']}/holdings", headers=as_("alice")).json()["holdings"]
+    assert {r["ticker"] for r in rows} >= {"AAA", "BBB"} and abs(sum(r["weight"] for r in rows) - 1) < 1e-9
+    new = client.post(f"/clients/{c['id']}/portfolios/holdings", headers=as_("alice"),
+                      json={"label": "Trim tech", "holdings": EDITED})
+    assert new.status_code == 201 and new.json()["source"] == "editor"
+    assert new.json()["id"] != p["id"] and new.json()["label"] == "Trim tech"
+    versions = client.get(f"/clients/{c['id']}", headers=as_("alice")).json()["portfolios"]
+    assert [v["source"] for v in versions] == ["upload", "editor"]
+    assert audit_records(store, "alice", p["firm_id"])[-1]["event"] == "portfolio_saved"
+
+
+def test_invalid_edited_holdings_are_rejected(api):
+    client, _ = api
+    c, _ = setup_portfolio(client)
+    bad = [{**EDITED[0], "shares": -5}]
+    r = client.post(f"/clients/{c['id']}/portfolios/holdings", headers=as_("alice"), json={"holdings": bad})
+    assert r.status_code == 422
+
+
+def test_what_if_returns_engine_before_after_and_is_audited(api):
+    client, store = api
+    _, p = setup_portfolio(client)
+    r = client.post(f"/portfolios/{p['id']}/what-if", headers=as_("alice"), json={"holdings": EDITED})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    expected_before = json.loads(execute_tool("get_risk_profile", {"holdings_path": str(DEFAULT_HOLDINGS)}).text)
+    assert body["before"] == expected_before
+    bets = next(h for h in body["comparison"]["headline"] if h["key"] == "effective_bets")
+    assert bets["after"] == body["after"]["concentration"]["effective_bets"]
+    assert "ZZZ" in body["comparison"]["added"]
+    rec = audit_records(store, "alice", p["firm_id"])[-1]
+    assert rec["event"] == "what_if" and rec["inputs"]["holdings"][2]["ticker"] == "ZZZ"
+
+
+def test_compare_two_versions(api):
+    client, _ = api
+    c, p = setup_portfolio(client)
+    v2 = client.post(f"/clients/{c['id']}/portfolios/holdings", headers=as_("alice"),
+                     json={"holdings": EDITED}).json()
+    r = client.get(f"/portfolios/{p['id']}/compare/{v2['id']}", headers=as_("alice")).json()
+    assert r["comparison"]["added"] == ["ZZZ"]
+
+
+def test_stress_preset_and_custom(api):
+    client, _ = api
+    _, p = setup_portfolio(client)
+    ids = [s["id"] for s in client.get("/stress/scenarios", headers=as_("alice")).json()]
+    assert "broad_selloff" in ids
+    r = client.post(f"/portfolios/{p['id']}/stress", headers=as_("alice"),
+                    json={"scenario_id": "broad_selloff"}).json()
+    assert abs(r["portfolio_return"] + 0.20) < 1e-9
+    custom = client.post(f"/portfolios/{p['id']}/stress", headers=as_("alice"),
+                         json={"sector_shocks": {"Technology": -0.5}, "default_shock": 0}).json()
+    tech = sum(s["weight"] for s in custom["sectors"] if s["sector"] == "Technology")
+    assert abs(custom["portfolio_return"] + 0.5 * tech) < 1e-9
+    assert client.post(f"/portfolios/{p['id']}/stress", headers=as_("alice"),
+                       json={"scenario_id": "meteor"}).status_code == 422
+
+
+def test_questionnaire_scores_on_save_and_checks_the_portfolio(api):
+    client, _ = api
+    c, p = setup_portfolio(client)
+    qs = client.get("/questionnaire", headers=as_("alice")).json()
+    assert len(qs["questions"]) == 6 and qs["method_status"]
+    assert client.get(f"/portfolios/{p['id']}/suitability", headers=as_("alice")).status_code == 409
+    answers = {q["id"]: 2 for q in qs["questions"]}
+    saved = client.put(f"/clients/{c['id']}/questionnaire", headers=as_("alice"), json={"answers": answers})
+    assert saved.status_code == 200 and saved.json()["risk_level"] == 6
+    detail = client.get(f"/clients/{c['id']}", headers=as_("alice")).json()
+    assert detail["questionnaire_result"]["risk_level"] == 6
+    s = client.get(f"/portfolios/{p['id']}/suitability", headers=as_("alice")).json()
+    assert s["checks"][0]["client_limit"] == 0.15
+    bad = client.put(f"/clients/{c['id']}/questionnaire", headers=as_("alice"),
+                     json={"answers": {"time_horizon": 9}})
+    assert bad.status_code == 422
+
+
+def test_drafts_list_for_a_portfolio(api):
+    client, _ = api
+    r = make_draft(client)
+    pid = client.get("/clients", headers=as_("alice")).json()[0]["id"]
+    portfolio = client.get(f"/clients/{pid}", headers=as_("alice")).json()["portfolios"][0]["id"]
+    drafts = client.get(f"/portfolios/{portfolio}/drafts", headers=as_("alice")).json()
+    assert [d["id"] for d in drafts] == [r["draft_id"]] and "tool_calls" not in drafts[0]
+
+
+def test_cfp_tools_respect_firm_isolation(api):
+    client, _ = api
+    c, p = setup_portfolio(client, "alice")
+    _, bob_p = setup_portfolio(client, "bob")
+    bob = as_("bob")
+    assert client.get(f"/portfolios/{p['id']}/holdings", headers=bob).status_code == 404
+    assert client.post(f"/portfolios/{p['id']}/what-if", headers=bob, json={"holdings": EDITED}).status_code == 404
+    assert client.post(f"/portfolios/{p['id']}/stress", headers=bob,
+                       json={"scenario_id": "broad_selloff"}).status_code == 404
+    assert client.get(f"/portfolios/{bob_p['id']}/compare/{p['id']}", headers=bob).status_code == 404
+    assert client.put(f"/clients/{c['id']}/questionnaire", headers=bob,
+                      json={"answers": {"time_horizon": 1}}).status_code == 404
+    assert client.post(f"/clients/{c['id']}/portfolios/holdings", headers=bob,
+                       json={"holdings": EDITED}).status_code == 404
+    assert client.get(f"/portfolios/{p['id']}/drafts", headers=bob).status_code == 404
