@@ -248,3 +248,11 @@ def test_beta_and_market_share_only_with_provided_market():
     m = risk_profile(h, r, market=market).to_dict()["concentration"]["market_adjusted"]
     assert m["market_proxy"] == "provided"
     assert {"portfolio_beta", "market_share_of_risk", "residual_effective_bets"} <= set(m)
+
+
+def test_a_tickers_synthetic_history_does_not_depend_on_the_other_holdings():
+    """What-if and compare rely on this: dropping a position must not reshuffle the rest."""
+    full = synthetic_returns(["AAA", "BBB", "CCC"], ["Tech", "Health", "Tech"], n_periods=36)
+    fewer = synthetic_returns(["CCC", "AAA"], ["Tech", "Tech"], n_periods=36)
+    pd.testing.assert_series_equal(full["AAA"], fewer["AAA"])
+    pd.testing.assert_series_equal(full["CCC"], fewer["CCC"])
