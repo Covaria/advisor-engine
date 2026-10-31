@@ -32,6 +32,8 @@ from psycopg.types.json import Jsonb
 from ..assistant.audit import build_record
 
 BUCKET = "holdings"
+# Portfolio columns the API returns (storage_path stays server-side).
+_PORTFOLIO_COLS = "id, firm_id, client_id, filename, sha256, uploaded_by, created_at, label, source"
 
 
 def _uuid(value: str) -> str | None:
@@ -149,28 +151,34 @@ class SupabaseSession:
         return self._run("select * from public.clients where firm_id = %s and id = %s",
                          [firm_id, cid], one=True)
 
+    def save_questionnaire(self, firm_id: str, client_id: str, answers: dict) -> dict:
+        return self._run(
+            "update public.clients set questionnaire = %s, questionnaire_updated_at = now() "
+            "where firm_id = %s and id = %s returning *",
+            [Jsonb(answers), firm_id, client_id], one=True)
+
     # --- portfolios ------------------------------------------------------------------
 
     def firm_dir(self, firm_id: str) -> Path:
         return self.store.cache_dir / "firms" / firm_id
 
     def add_portfolio(self, firm_id: str, client_id: str, adviser_id: str, filename: str,
-                      csv_bytes: bytes, sha256: str) -> dict:
+                      csv_bytes: bytes, sha256: str, label: str = "", source: str = "upload") -> dict:
         pid = str(uuid.uuid4())
         path = f"{firm_id}/{pid}.csv"
         self.store.storage.put(path, csv_bytes)
         return self._run(
             "insert into public.portfolios (id, firm_id, client_id, filename, sha256, storage_path,"
-            " uploaded_by) values (%s, %s, %s, %s, %s, %s, %s) "
-            "returning id, firm_id, client_id, filename, sha256, uploaded_by, created_at",
-            [pid, firm_id, client_id, filename, sha256, path, adviser_id], one=True)
+            " uploaded_by, label, source) values (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            f"returning {_PORTFOLIO_COLS}",
+            [pid, firm_id, client_id, filename, sha256, path, adviser_id, label, source], one=True)
 
     def list_portfolios(self, firm_id: str, client_id: str) -> list[dict]:
         if not (cid := _uuid(client_id)):
             return []
         return self._run(
-            "select id, firm_id, client_id, filename, sha256, uploaded_by, created_at "
-            "from public.portfolios where firm_id = %s and client_id = %s order by created_at",
+            f"select {_PORTFOLIO_COLS} from public.portfolios "
+            "where firm_id = %s and client_id = %s order by created_at",
             [firm_id, cid])
 
     def get_portfolio(self, firm_id: str, portfolio_id: str) -> dict | None:
@@ -222,6 +230,10 @@ class SupabaseSession:
             return None
         return self._run("select * from public.drafts where firm_id = %s and id = %s",
                          [firm_id, did], one=True)
+
+    def list_drafts(self, firm_id: str, portfolio_id: str) -> list[dict]:
+        return self._run("select * from public.drafts where firm_id = %s and portfolio_id = %s "
+                         "order by created_at desc", [firm_id, portfolio_id])
 
     def save_draft(self, firm_id: str, draft: dict) -> None:
         self._run(

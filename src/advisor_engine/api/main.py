@@ -22,11 +22,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .. import __version__
+from .. import questionnaire as qn
 from ..assistant.chat import run_turn
 from ..assistant.mock_client import MockClient
 from ..assistant.numcheck import verify
-from ..assistant.tools import execute_tool
-from ..holdings import validate_holdings
+from ..assistant.tools import RETURNS_SOURCE, execute_tool, get_returns
+from ..compare import compare_profiles
+from ..holdings import REQUIRED, load_holdings, validate_holdings
+from ..risk import risk_profile
+from ..stress import run_scenario, scenario_list, stress_test
 from .auth import User, current_user
 from .settings import Settings, load_settings
 from .store import LocalStore
@@ -50,6 +54,49 @@ class TurnIn(BaseModel):
 
 class ApproveIn(BaseModel):
     text: str = Field(min_length=1, max_length=20000)
+
+
+class HoldingRow(BaseModel):
+    ticker: str = Field(min_length=1, max_length=20)
+    shares: float
+    price: float
+    sector: str = Field(min_length=1, max_length=60)
+
+
+class HoldingsIn(BaseModel):
+    holdings: list[HoldingRow] = Field(min_length=1, max_length=500)
+    label: str = Field(default="", max_length=120)
+
+
+class StressIn(BaseModel):
+    scenario_id: str | None = None  # a preset, or else the custom shocks below
+    sector_shocks: dict[str, float] = Field(default_factory=dict)
+    default_shock: float = 0.0
+
+
+class QuestionnaireIn(BaseModel):
+    answers: dict[str, int]
+
+
+def _frame(rows: list[HoldingRow]) -> pd.DataFrame:
+    try:
+        return validate_holdings(pd.DataFrame([r.model_dump() for r in rows]))
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+def _engine_profile(holdings: pd.DataFrame) -> dict:
+    """The same payload get_risk_profile returns, for holdings that aren't a stored file."""
+    try:
+        return {"returns_source": RETURNS_SOURCE,
+                **risk_profile(holdings, get_returns(holdings)).to_dict()}
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+def _holdings_rows(df: pd.DataFrame) -> list[dict]:
+    return [{k: (float(v) if k in ("shares", "price", "value", "weight") else v)
+             for k, v in row.items()} for row in df.to_dict("records")]
 
 
 def _tool_view(call: dict) -> dict:
@@ -105,6 +152,25 @@ def create_app(settings: Settings | None = None, store=None) -> FastAPI:
             raise HTTPException(404, "Portfolio not found.")
         return p
 
+    def profile_of(c: Ctx, portfolio_id: str) -> dict:
+        """Engine output for a stored portfolio, through the same tool the model uses."""
+        fid = c.adv["firm_id"]
+        res = execute_tool("get_risk_profile",
+                           {"holdings_path": str(c.db.holdings_file(fid, portfolio_id))},
+                           data_dir=c.db.firm_dir(fid))
+        if res.is_error:
+            raise HTTPException(422, res.text)
+        return json.loads(res.text)
+
+    def frame_of(c: Ctx, portfolio_id: str) -> pd.DataFrame:
+        return load_holdings(str(c.db.holdings_file(c.adv["firm_id"], portfolio_id)))
+
+    def log(c: Ctx, event: str, **fields) -> None:
+        """Every engine run from a CFP tool is audited with its inputs and result."""
+        c.db.write_audit(c.adv["firm_id"], {"event": event, "model": None,
+                                            "adviser_id": c.adv["id"],
+                                            "firm_id": c.adv["firm_id"], **fields})
+
     @app.get("/health")
     def health() -> dict:
         return {"ok": True, "engine_version": __version__}
@@ -127,8 +193,11 @@ def create_app(settings: Settings | None = None, store=None) -> FastAPI:
 
     @app.get("/clients/{client_id}")
     def get_client(client_id: str, c: Ctx = Depends(ctx)) -> dict:
-        return {**own_client(c, client_id),
-                "portfolios": c.db.list_portfolios(c.adv["firm_id"], client_id)}
+        client = own_client(c, client_id)
+        answers = client.get("questionnaire")
+        return {**client, "portfolios": c.db.list_portfolios(c.adv["firm_id"], client_id),
+                # Scored on read, so a method change never leaves a stale stored score.
+                "questionnaire_result": qn.score(answers) if answers else None}
 
     @app.post("/clients/{client_id}/portfolios", status_code=201)
     async def upload_portfolio(client_id: str, file: UploadFile = File(...),
@@ -149,14 +218,102 @@ def create_app(settings: Settings | None = None, store=None) -> FastAPI:
 
     @app.get("/portfolios/{portfolio_id}/profile")
     def profile(portfolio_id: str, c: Ctx = Depends(ctx)) -> dict:
-        fid = c.adv["firm_id"]
+        p = own_portfolio(c, portfolio_id)
+        return {"holdings_sha256": p["sha256"], "profile": profile_of(c, portfolio_id)}
+
+    # --- CFP tools: holdings, what-if, compare, stress, questionnaire ---------------
+
+    @app.get("/portfolios/{portfolio_id}/holdings")
+    def holdings(portfolio_id: str, c: Ctx = Depends(ctx)) -> dict:
         own_portfolio(c, portfolio_id)
-        res = execute_tool("get_risk_profile",
-                           {"holdings_path": str(c.db.holdings_file(fid, portfolio_id))},
-                           data_dir=c.db.firm_dir(fid))
-        if res.is_error:
-            raise HTTPException(422, res.text)
-        return {"holdings_sha256": res.holdings_sha256, "profile": json.loads(res.text)}
+        return {"holdings": _holdings_rows(frame_of(c, portfolio_id))}
+
+    @app.post("/clients/{client_id}/portfolios/holdings", status_code=201)
+    def save_holdings(client_id: str, body: HoldingsIn, c: Ctx = Depends(ctx)) -> dict:
+        """Save edited holdings as a new portfolio version; the original is never changed."""
+        own_client(c, client_id)
+        data = _frame(body.holdings)[REQUIRED].to_csv(index=False).encode()
+        p = c.db.add_portfolio(c.adv["firm_id"], client_id, c.adv["id"], "edited-holdings.csv",
+                               data, hashlib.sha256(data).hexdigest(),
+                               label=body.label.strip(), source="editor")
+        log(c, "portfolio_saved", client_id=client_id, portfolio_id=p["id"],
+            holdings_sha256=p["sha256"])
+        return p
+
+    @app.post("/portfolios/{portfolio_id}/what-if")
+    def what_if(portfolio_id: str, body: HoldingsIn, c: Ctx = Depends(ctx)) -> dict:
+        p = own_portfolio(c, portfolio_id)
+        before = profile_of(c, portfolio_id)
+        after = _engine_profile(_frame(body.holdings))
+        comparison = compare_profiles(before, after)
+        log(c, "what_if", client_id=p["client_id"], portfolio_id=portfolio_id,
+            holdings_sha256=p["sha256"],
+            inputs={"holdings": [r.model_dump() for r in body.holdings]}, result=comparison)
+        return {"before": before, "after": after, "comparison": comparison}
+
+    @app.get("/portfolios/{portfolio_id}/compare/{other_id}")
+    def compare(portfolio_id: str, other_id: str, c: Ctx = Depends(ctx)) -> dict:
+        p, o = own_portfolio(c, portfolio_id), own_portfolio(c, other_id)
+        before, after = profile_of(c, portfolio_id), profile_of(c, other_id)
+        comparison = compare_profiles(before, after)
+        log(c, "compare", client_id=p["client_id"], portfolio_id=portfolio_id,
+            inputs={"other_portfolio_id": other_id, "other_client_id": o["client_id"]},
+            result=comparison)
+        return {"before": before, "after": after, "comparison": comparison}
+
+    @app.get("/stress/scenarios")
+    def scenarios(c: Ctx = Depends(ctx)) -> list[dict]:
+        return scenario_list()
+
+    @app.post("/portfolios/{portfolio_id}/stress")
+    def stress(portfolio_id: str, body: StressIn, c: Ctx = Depends(ctx)) -> dict:
+        p = own_portfolio(c, portfolio_id)
+        df = frame_of(c, portfolio_id)
+        try:
+            if body.scenario_id:
+                result = run_scenario(df, body.scenario_id)
+            else:
+                result = {"scenario": {"id": "custom", "label": "Custom scenario",
+                                       "sectors": body.sector_shocks,
+                                       "default": body.default_shock},
+                          **stress_test(df, body.sector_shocks, body.default_shock)}
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        log(c, "stress", client_id=p["client_id"], portfolio_id=portfolio_id,
+            holdings_sha256=p["sha256"], inputs=body.model_dump(), result=result)
+        return result
+
+    @app.get("/questionnaire")
+    def questionnaire(c: Ctx = Depends(ctx)) -> dict:
+        return {"questions": qn.QUESTIONS, "method_version": qn.METHOD_VERSION,
+                "method_status": qn.METHOD_STATUS}
+
+    @app.put("/clients/{client_id}/questionnaire")
+    def save_questionnaire(client_id: str, body: QuestionnaireIn, c: Ctx = Depends(ctx)) -> dict:
+        own_client(c, client_id)
+        try:
+            result = qn.score(body.answers)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        c.db.save_questionnaire(c.adv["firm_id"], client_id, body.answers)
+        log(c, "questionnaire_saved", client_id=client_id, inputs=body.answers, result=result)
+        return result
+
+    @app.get("/portfolios/{portfolio_id}/suitability")
+    def suitability(portfolio_id: str, c: Ctx = Depends(ctx)) -> dict:
+        p = own_portfolio(c, portfolio_id)
+        client = own_client(c, p["client_id"])
+        if not client.get("questionnaire"):
+            raise HTTPException(409, "Complete the client's risk questionnaire first.")
+        result = qn.score(client["questionnaire"])
+        return {"questionnaire": result,
+                "checks": qn.check_portfolio(result, profile_of(c, portfolio_id))}
+
+    @app.get("/portfolios/{portfolio_id}/drafts")
+    def drafts(portfolio_id: str, c: Ctx = Depends(ctx)) -> list[dict]:
+        own_portfolio(c, portfolio_id)
+        return [{k: v for k, v in d.items() if k != "tool_calls"}
+                for d in c.db.list_drafts(c.adv["firm_id"], portfolio_id)]
 
     # --- assistant -------------------------------------------------------------------
 
