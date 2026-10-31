@@ -13,12 +13,14 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import re
 from dataclasses import dataclass
 
 import pandas as pd
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .. import __version__
@@ -35,6 +37,8 @@ from .auth import User, current_user
 from .settings import Settings, load_settings
 from .store import LocalStore
 from .supabase_store import SupabaseStorage, SupabaseStore
+
+log_ = logging.getLogger("advisor_engine.api")
 
 DRAFT_REQUEST = "Please write a client-ready explanation of this portfolio's risk, for my review."
 TOOL_LABELS = {"get_risk_profile": "Risk profile"}
@@ -131,6 +135,21 @@ def create_app(settings: Settings | None = None, store=None) -> FastAPI:
     app = FastAPI(title="Advisor Engine API", version=__version__)
     app.state.settings = settings
     app.state.store = store
+    @app.middleware("http")
+    async def server_errors_as_json(request: Request, call_next):
+        """Turn an unexpected error into a 500 *inside* the CORS layer.
+
+        Starlette answers unhandled exceptions outside every middleware, so that response
+        would carry no CORS headers and the browser would report a misleading "Failed to
+        fetch". Registered before CORS, so CORS wraps it. Details go to the server log only.
+        """
+        try:
+            return await call_next(request)
+        except Exception:
+            log_.exception("Unhandled error on %s %s", request.method, request.url.path)
+            return JSONResponse({"detail": "Server error. It has been logged; please try again."},
+                                status_code=500)
+
     app.add_middleware(
         CORSMiddleware, allow_origins=settings.allowed_origins, allow_credentials=True,
         allow_methods=["*"], allow_headers=["Authorization", "Content-Type", "X-Dev-User"],
