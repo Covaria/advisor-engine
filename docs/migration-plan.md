@@ -44,10 +44,17 @@ Render static site             - verifies Supabase access tokens       - Auth (e
 `POST /drafts/{id}/approve`, `GET /audit`. Supabase tokens are verified (JWKS or the
 legacy HS256 secret). Persistence is `LocalStore`, which Phase 2 replaces.
 
-### Phase 2: Supabase
-- Create the project (paid plan before real client data). Auth: email and password with "Confirm email" on, MFA available.
-- Migrations in `supabase/migrations/`: `firms`, `advisers` (`firm_id`, `role`, `status`, `crd`), `clients`, `portfolios`, `conversations`, `drafts`, `audit_events`. Row-level security keys every table on the caller's firm. `audit_events` allows insert only, no update or delete.
-- `SupabaseStore` implements the `LocalStore` methods (Postgres plus Storage for CSVs), with the same API tests run against both.
+### Phase 2: Supabase (code done; migration to apply)
+- Project `znkwkvcnxtahwinrxbvn`: Pro, East US (North Virginia), JWT signing keys,
+  "Confirm email" on, TOTP MFA available.
+- `supabase/migrations/`: tables for firms, advisers (`role`, `status`, `crd`), clients,
+  portfolios, conversations, drafts, `audit_events` (insert-only) and usage. Row-level
+  security on every table, keyed on the caller's firm. Private `holdings` Storage bucket.
+- `SupabaseStore` runs every query as the signed-in adviser, so the database enforces
+  firm separation on the API's own queries. The API tests run against both stores, and
+  database tests check the rules hold even when the API passes the wrong firm.
+- Remaining: apply the migration to the project (`supabase/README.md`) and set
+  `SUPABASE_DB_URL` / `SUPABASE_SECRET_KEY` where the API runs.
 
 ### Phase 3: React app matching Streamlit
 - Vite, React, TypeScript, React Router, TanStack Query, Supabase JS (sign-in only), Tailwind with the KVS tokens, Recharts.

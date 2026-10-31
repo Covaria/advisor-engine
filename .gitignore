@@ -18,3 +18,7 @@ __pycache__/
 .DS_Store
 .vscode/*
 !.vscode/settings.json
+
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/

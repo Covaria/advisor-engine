@@ -340,3 +340,15 @@ def test_audit_extra_is_recorded_but_cannot_overwrite_turn_fields(tmp_path):
     run(client, tmp_path, audit_extra={"adviser_id": "u1", "blocked": "spoofed"})
     rec = audit_lines(tmp_path)[-1]
     assert rec["adviser_id"] == "u1" and rec["blocked"] is False
+
+
+def test_audit_sink_gets_the_built_redacted_record_instead_of_the_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-value-123")
+    got = []
+    client = FakeClient([[tool_block()], [text_block(good_reply())]])
+    chat.run_turn("Which positions add the most risk? sk-ant-secret-value-123", [], client,
+                  model="test-model", audit_path=tmp_path / "audit.jsonl", audit_sink=got.append)
+    assert not (tmp_path / "audit.jsonl").exists()
+    (rec,) = got
+    assert rec["engine_version"] and rec["timestamp"]
+    assert "sk-ant-secret-value-123" not in json.dumps(rec)

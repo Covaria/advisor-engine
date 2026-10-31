@@ -1,8 +1,9 @@
 """Persistence for the API, scoped by firm.
 
 `LocalStore` keeps everything on local disk (JSON plus the uploaded CSVs) for
-development, tests and single-machine demos. The Supabase store (Postgres + Storage,
-phase 2 of docs/migration-plan.md) implements the same methods.
+development, tests and single-machine demos. `SupabaseStore` (supabase_store.py) keeps
+it in Postgres and Storage. Routes call `store.as_user(user_id, email)` once per request
+and use only the session it returns, so both stores expose the same methods there.
 
 Firm isolation is structural, not just a filter:
 - Every read takes a `firm_id` and returns None for another firm's ids, so routes answer
@@ -22,6 +23,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..assistant.audit import append_audit
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -35,6 +38,10 @@ class LocalStore:
     def __init__(self, root: Path):
         self.root = Path(root)
         self._lock = threading.RLock()
+
+    def as_user(self, user_id: str, email: str) -> "LocalStore":
+        """Every method already takes the caller's firm explicitly, so the session is self."""
+        return self
 
     # --- files -----------------------------------------------------------------------
 
@@ -121,6 +128,10 @@ class LocalStore:
     def portfolio_csv(self, firm_id: str, portfolio_id: str) -> Path:
         return self.firm_dir(firm_id) / "portfolios" / f"{portfolio_id}.csv"
 
+    def holdings_file(self, firm_id: str, portfolio_id: str) -> Path:
+        """The CSV to hand the engine tool; it sits inside `firm_dir(firm_id)`."""
+        return self.portfolio_csv(firm_id, portfolio_id)
+
     def add_portfolio(self, firm_id: str, client_id: str, adviser_id: str, filename: str,
                       csv_bytes: bytes, sha256: str) -> dict:
         pid = _new_id()
@@ -159,6 +170,9 @@ class LocalStore:
         self._update(firm_id, lambda s: s["drafts"].__setitem__(draft["id"], draft))
 
     # --- audit -----------------------------------------------------------------------
+
+    def write_audit(self, firm_id: str, record: dict) -> dict:
+        return append_audit(record, self.audit_path(firm_id))
 
     def read_audit(self, firm_id: str) -> list[dict]:
         path = self.audit_path(firm_id)

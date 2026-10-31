@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import prompts
-from .audit import append_audit
+from .audit import append_audit, build_record
 from .numcheck import verify
 from .tools import TOOLS, execute_tool
 
@@ -106,11 +106,14 @@ def run_turn(
     data_dir: Path | None = None,
     returns_fn=None,
     audit_extra: dict | None = None,
+    audit_sink=None,
 ) -> TurnResult:
     """Answer one user message. `history` is the `.history` of the previous result.
 
     `audit_extra` is merged into the audit record (e.g. who asked, for which firm); it
-    cannot overwrite the turn's own fields.
+    cannot overwrite the turn's own fields. `audit_sink(record)` replaces the JSONL file
+    (e.g. a database insert); it receives the record already built by
+    `audit.build_record`, so timestamps, engine version and key redaction are the same.
     """
     _load_env()
     client = client or _make_client()
@@ -196,19 +199,20 @@ def run_turn(
             shown += "\n\n" + firm_profile["disclaimer"]
         new_history = [m for i, m in enumerate(messages) if i not in drop]
 
-    append_audit(
-        {
-            **(audit_extra or {}),
-            "model": model,
-            "holdings_sha256": holdings_sha,
-            "user_message": user_message,
-            "tool_calls": tool_calls,
-            "reply": text,
-            "retries": retries,
-            "verification": verification,
-            "blocked": blocked,
-            "block_reason": block_reason,
-        },
-        audit_path,
-    )
+    record = {
+        **(audit_extra or {}),
+        "model": model,
+        "holdings_sha256": holdings_sha,
+        "user_message": user_message,
+        "tool_calls": tool_calls,
+        "reply": text,
+        "retries": retries,
+        "verification": verification,
+        "blocked": blocked,
+        "block_reason": block_reason,
+    }
+    if audit_sink:
+        audit_sink(build_record(record))
+    else:
+        append_audit(record, audit_path)
     return TurnResult(shown, blocked, verification, new_history, tool_calls, block_reason)

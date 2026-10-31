@@ -9,6 +9,7 @@ being issued before the address is verified, which this server relies on.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -48,6 +49,10 @@ def verify_supabase_token(token: str, settings: Settings) -> User:
     return User(id=claims["sub"], email=claims.get("email", ""))
 
 
+def dev_user_id(name: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"advisor-engine-dev:{name}"))
+
+
 def current_user(
     request: Request,
     authorization: str = Header(default=""),
@@ -57,7 +62,8 @@ def current_user(
     if settings.auth == "dev":
         if not x_dev_user:
             raise HTTPException(401, "Dev auth: send an X-Dev-User header.")
-        return User(id=f"dev:{x_dev_user}", email=f"{x_dev_user}@dev.local")
+        # A stable UUID per name, the same shape as a Supabase user id.
+        return User(id=dev_user_id(x_dev_user), email=f"{x_dev_user}@dev.local")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(401, "Sign in required.")

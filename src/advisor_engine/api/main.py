@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import re
+from dataclasses import dataclass
 
 import pandas as pd
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -21,7 +22,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .. import __version__
-from ..assistant.audit import append_audit
 from ..assistant.chat import run_turn
 from ..assistant.mock_client import MockClient
 from ..assistant.numcheck import verify
@@ -30,6 +30,7 @@ from ..holdings import validate_holdings
 from .auth import User, current_user
 from .settings import Settings, load_settings
 from .store import LocalStore
+from .supabase_store import SupabaseStorage, SupabaseStore
 
 DRAFT_REQUEST = "Please write a client-ready explanation of this portfolio's risk, for my review."
 TOOL_LABELS = {"get_risk_profile": "Risk profile"}
@@ -62,9 +63,24 @@ def _tool_view(call: dict) -> dict:
             "output": output}
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+@dataclass
+class Ctx:
+    """The signed-in adviser and a store session that acts as them."""
+    adv: dict
+    db: object
+
+
+def make_store(settings: Settings):
+    if settings.store == "supabase":
+        return SupabaseStore(settings.supabase_db_url,
+                             SupabaseStorage(settings.supabase_url, settings.supabase_secret_key),
+                             cache_dir=settings.store_dir / "cache")
+    return LocalStore(settings.store_dir)
+
+
+def create_app(settings: Settings | None = None, store=None) -> FastAPI:
     settings = settings or load_settings()
-    store = LocalStore(settings.store_dir)
+    store = store or make_store(settings)
     app = FastAPI(title="Advisor Engine API", version=__version__)
     app.state.settings = settings
     app.state.store = store
@@ -73,17 +89,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"], allow_headers=["Authorization", "Content-Type", "X-Dev-User"],
     )
 
-    def adviser(user: User = Depends(current_user)) -> dict:
-        return store.get_or_create_adviser(user.id, user.email)
+    def ctx(user: User = Depends(current_user)) -> Ctx:
+        db = store.as_user(user.id, user.email)
+        return Ctx(db.get_or_create_adviser(user.id, user.email), db)
 
-    def own_client(firm_id: str, client_id: str) -> dict:
-        c = store.get_client(firm_id, client_id)
-        if c is None:
+    def own_client(c: Ctx, client_id: str) -> dict:
+        client = c.db.get_client(c.adv["firm_id"], client_id)
+        if client is None:
             raise HTTPException(404, "Client not found.")
-        return c
+        return client
 
-    def own_portfolio(firm_id: str, portfolio_id: str) -> dict:
-        p = store.get_portfolio(firm_id, portfolio_id)
+    def own_portfolio(c: Ctx, portfolio_id: str) -> dict:
+        p = c.db.get_portfolio(c.adv["firm_id"], portfolio_id)
         if p is None:
             raise HTTPException(404, "Portfolio not found.")
         return p
@@ -93,30 +110,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True, "engine_version": __version__}
 
     @app.get("/me")
-    def me(adv: dict = Depends(adviser)) -> dict:
-        return {"adviser": adv, "firm": store.get_firm(adv["firm_id"]), "auth": settings.auth,
+    def me(c: Ctx = Depends(ctx)) -> dict:
+        return {"adviser": c.adv, "firm": c.db.get_firm(c.adv["firm_id"]), "auth": settings.auth,
                 "llm": settings.llm, "daily_turn_limit": settings.daily_turn_limit,
                 "engine_version": __version__}
 
     # --- clients and portfolios ------------------------------------------------------
 
     @app.get("/clients")
-    def list_clients(adv: dict = Depends(adviser)) -> list[dict]:
-        return store.list_clients(adv["firm_id"])
+    def list_clients(c: Ctx = Depends(ctx)) -> list[dict]:
+        return c.db.list_clients(c.adv["firm_id"])
 
     @app.post("/clients", status_code=201)
-    def create_client(body: ClientIn, adv: dict = Depends(adviser)) -> dict:
-        return store.create_client(adv["firm_id"], adv["id"], body.model_dump())
+    def create_client(body: ClientIn, c: Ctx = Depends(ctx)) -> dict:
+        return c.db.create_client(c.adv["firm_id"], c.adv["id"], body.model_dump())
 
     @app.get("/clients/{client_id}")
-    def get_client(client_id: str, adv: dict = Depends(adviser)) -> dict:
-        return {**own_client(adv["firm_id"], client_id),
-                "portfolios": store.list_portfolios(adv["firm_id"], client_id)}
+    def get_client(client_id: str, c: Ctx = Depends(ctx)) -> dict:
+        return {**own_client(c, client_id),
+                "portfolios": c.db.list_portfolios(c.adv["firm_id"], client_id)}
 
     @app.post("/clients/{client_id}/portfolios", status_code=201)
     async def upload_portfolio(client_id: str, file: UploadFile = File(...),
-                               adv: dict = Depends(adviser)) -> dict:
-        own_client(adv["firm_id"], client_id)
+                               c: Ctx = Depends(ctx)) -> dict:
+        own_client(c, client_id)
         data = await file.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
             raise HTTPException(413, "Holdings file is larger than 2 MB.")
@@ -127,16 +144,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             validate_holdings(pd.read_csv(io.BytesIO(data)))
         except Exception as e:  # any load failure means the file is not usable
             raise HTTPException(422, f"{name} was rejected: {e}") from e
-        return store.add_portfolio(adv["firm_id"], client_id, adv["id"], name, data,
+        return c.db.add_portfolio(c.adv["firm_id"], client_id, c.adv["id"], name, data,
                                    hashlib.sha256(data).hexdigest())
 
     @app.get("/portfolios/{portfolio_id}/profile")
-    def profile(portfolio_id: str, adv: dict = Depends(adviser)) -> dict:
-        fid = adv["firm_id"]
-        own_portfolio(fid, portfolio_id)
+    def profile(portfolio_id: str, c: Ctx = Depends(ctx)) -> dict:
+        fid = c.adv["firm_id"]
+        own_portfolio(c, portfolio_id)
         res = execute_tool("get_risk_profile",
-                           {"holdings_path": str(store.portfolio_csv(fid, portfolio_id))},
-                           data_dir=store.firm_dir(fid))
+                           {"holdings_path": str(c.db.holdings_file(fid, portfolio_id))},
+                           data_dir=c.db.firm_dir(fid))
         if res.is_error:
             raise HTTPException(422, res.text)
         return {"holdings_sha256": res.holdings_sha256, "profile": json.loads(res.text)}
@@ -144,30 +161,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # --- assistant -------------------------------------------------------------------
 
     @app.get("/portfolios/{portfolio_id}/messages")
-    def messages(portfolio_id: str, adv: dict = Depends(adviser)) -> list[dict]:
-        own_portfolio(adv["firm_id"], portfolio_id)
-        return store.get_conversation(adv["firm_id"], portfolio_id)["messages"]
+    def messages(portfolio_id: str, c: Ctx = Depends(ctx)) -> list[dict]:
+        own_portfolio(c, portfolio_id)
+        return c.db.get_conversation(c.adv["firm_id"], portfolio_id)["messages"]
 
     @app.post("/portfolios/{portfolio_id}/turns")
-    def ask(portfolio_id: str, body: TurnIn, adv: dict = Depends(adviser)) -> dict:
-        fid = adv["firm_id"]
-        portfolio = own_portfolio(fid, portfolio_id)
+    def ask(portfolio_id: str, body: TurnIn, c: Ctx = Depends(ctx)) -> dict:
+        fid = c.adv["firm_id"]
+        portfolio = own_portfolio(c, portfolio_id)
         question = DRAFT_REQUEST if body.draft else body.message.strip()
         if not question:
             raise HTTPException(422, "Ask a question or request a draft.")
-        if not store.bump_turns(adv["id"], settings.daily_turn_limit):
+        if not c.db.bump_turns(c.adv["id"], settings.daily_turn_limit):
             raise HTTPException(429, "Daily assistant limit reached; try again tomorrow.")
-        client = store.get_client(fid, portfolio["client_id"]) or {}
-        conversation = store.get_conversation(fid, portfolio_id)
+        client = c.db.get_client(fid, portfolio["client_id"]) or {}
+        conversation = c.db.get_conversation(fid, portfolio_id)
         try:
             result = run_turn(
                 question, conversation["history"],
                 MockClient() if settings.llm == "mock" else None,
                 firm_profile={k: client[k] for k in ("objective", "tone") if client.get(k)},
-                default_holdings=str(store.portfolio_csv(fid, portfolio_id)),
-                audit_path=store.audit_path(fid),
-                data_dir=store.firm_dir(fid),
-                audit_extra={"event": "turn", "adviser_id": adv["id"], "firm_id": fid,
+                default_holdings=str(c.db.holdings_file(fid, portfolio_id)),
+                data_dir=c.db.firm_dir(fid),
+                audit_sink=lambda record: c.db.write_audit(fid, record),
+                audit_extra={"event": "turn", "adviser_id": c.adv["id"], "firm_id": fid,
                              "client_id": portfolio["client_id"], "portfolio_id": portfolio_id},
             )
         except Exception as e:  # missing package, model API error, ...
@@ -175,48 +192,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         draft_id = None
         if body.draft and not result.blocked:
-            draft_id = store.create_draft(fid, {
-                "portfolio_id": portfolio_id, "created_by": adv["id"],
+            draft_id = c.db.create_draft(fid, {
+                "portfolio_id": portfolio_id, "created_by": c.adv["id"],
                 "original": result.reply, "tool_calls": result.tool_calls})["id"]
         reply = {"role": "assistant", "content": result.reply, "blocked": result.blocked,
                  "verification": result.verification,
-                 "tool_calls": [_tool_view(c) for c in result.tool_calls], "draft_id": draft_id}
+                 "tool_calls": [_tool_view(call) for call in result.tool_calls], "draft_id": draft_id}
         conversation["history"] = result.history
         conversation["messages"] += [{"role": "user", "content": question}, reply]
-        store.save_conversation(fid, portfolio_id, conversation)
+        c.db.save_conversation(fid, portfolio_id, conversation)
         return reply
 
     @app.post("/drafts/{draft_id}/approve")
-    def approve(draft_id: str, body: ApproveIn, adv: dict = Depends(adviser)) -> dict:
-        fid = adv["firm_id"]
-        draft = store.get_draft(fid, draft_id)
+    def approve(draft_id: str, body: ApproveIn, c: Ctx = Depends(ctx)) -> dict:
+        fid = c.adv["firm_id"]
+        draft = c.db.get_draft(fid, draft_id)
         if draft is None:
             raise HTTPException(404, "Draft not found.")
         if draft["approved"]:
             raise HTTPException(409, "This draft is already approved.")
         # Edits are re-checked: an adviser can reword, but not add a figure the engine
         # never produced.
-        check = verify(body.text, [c["output"] for c in draft["tool_calls"]])
+        check = verify(body.text, [call["output"] for call in draft["tool_calls"]])
         if not check["ok"]:
             raise HTTPException(422, {"message": "These figures are not from the engine.",
                                       "unmatched": check["unmatched"]})
-        record = append_audit({
-            "event": "draft_approved", "model": None, "adviser_id": adv["id"],
-            "approved_by_email": adv["email"], "firm_id": fid,
+        record = c.db.write_audit(fid, {
+            "event": "draft_approved", "model": None, "adviser_id": c.adv["id"],
+            "approved_by_email": c.adv["email"], "firm_id": fid,
             "portfolio_id": draft["portfolio_id"], "draft_id": draft_id,
             "user_message": DRAFT_REQUEST, "tool_calls": draft["tool_calls"],
             "reply": draft["original"], "approved_text": body.text,
             "edited": body.text != draft["original"], "verification": check, "blocked": False,
-        }, store.audit_path(fid))
-        draft.update(approved=True, approved_text=body.text, approved_by=adv["id"],
+        })
+        draft.update(approved=True, approved_text=body.text, approved_by=c.adv["id"],
                      approved_at=record["timestamp"])
-        store.save_draft(fid, draft)
+        c.db.save_draft(fid, draft)
         return draft
 
     @app.get("/audit")
-    def audit(portfolio_id: str | None = None, adv: dict = Depends(adviser)) -> list[dict]:
+    def audit(portfolio_id: str | None = None, c: Ctx = Depends(ctx)) -> list[dict]:
         """The firm's audit trail, newest first, as a summary (full records stay server-side)."""
-        rows = store.read_audit(adv["firm_id"])
+        rows = c.db.read_audit(c.adv["firm_id"])
         if portfolio_id:
             rows = [r for r in rows if r.get("portfolio_id") == portfolio_id]
         keys = ("timestamp", "event", "engine_version", "model", "adviser_id", "client_id",
