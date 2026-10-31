@@ -59,9 +59,11 @@ src/advisor_engine/
     api/
         settings.py    env config; dev auth forces mock and refuses to run on Render
         auth.py        current_user(): Supabase access token (JWKS/HS256) or X-Dev-User
-        store.py       LocalStore: firm-scoped clients, portfolios, drafts, audit
+        store.py       LocalStore: firm-scoped clients, portfolios, drafts, audit (dev, tests)
+        supabase_store.py SupabaseStore: same methods on Postgres (RLS) + Storage
         main.py        FastAPI routes over execute_tool / run_turn / verify
 docs/migration-plan.md React + FastAPI + Supabase plan and the decisions behind it
+supabase/migrations/   Postgres schema, row-level security, append-only audit (see supabase/README.md)
 data/sample/           synthetic portfolios, the only committed data
 .streamlit/config.toml KVS palette when running `streamlit run` from the repo root
 tests/                 one test file per module area
@@ -127,12 +129,22 @@ every turn --append_audit--> data/audit/audit.jsonl
 - Live model calls require `auth == "supabase"` (`Settings.llm`). Don't add another path to
   the real client.
 - Responses never include server file paths (see `_tool_view`).
+- Routes use only the session from `store.as_user(...)` (the `Ctx` dependency). With
+  Supabase that session runs every query as `authenticated` with the caller's claims, so
+  row-level security applies to the API itself. Audit records go through
+  `db.write_audit` (`run_turn(audit_sink=...)`), never straight to a file.
+- Schema changes are new files in `supabase/migrations/` (never edit an applied one).
+  Every table gets RLS keyed on `app.current_firm_id()`; add tests to
+  `tests/test_supabase_store.py` that query without a firm filter.
 
 ### Tests
 - Tests never hit the network. Assistant tests use a scripted `FakeClient`; UI tests
   use Streamlit's `AppTest` with `ADVISOR_LLM=mock` and a temp `AUDIT_PATH`. API tests use
-  `create_app(Settings(auth="dev", store_dir=tmp_path))` and FastAPI's `TestClient`;
-  token tests sign HS256 tokens with a test secret.
+  `create_app(Settings(auth="dev", store_dir=tmp_path), store=...)` and FastAPI's
+  `TestClient`, once per store; token tests sign HS256 tokens with a test secret.
+- The `supabase_db` fixture (conftest.py) makes a fresh Postgres database with
+  `tests/supabase_shim.sql` and the migrations applied; it skips without Postgres
+  (`TEST_DATABASE_URL`). CI runs a Postgres service and fails if those tests skip.
 - Write audit output to `tmp_path` in tests (monkeypatch `audit.AUDIT_PATH` or pass
   `audit_path=`), never to the real `data/audit/`.
 - Run `pytest` before committing; the suite is fast (seconds).

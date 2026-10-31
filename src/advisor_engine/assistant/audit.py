@@ -30,19 +30,28 @@ def _redact(line: str) -> str:
     return _KEY_PATTERN.sub("[REDACTED]", line)
 
 
-def append_audit(record: dict, path: str | Path | None = None) -> dict:
-    """Write `record` as one JSON line, adding timestamp and engine_version if absent.
+def build_record(record: dict) -> dict:
+    """`record` with timestamp and engine_version added (if absent) and API keys redacted.
 
-    Expected keys: model, holdings_sha256, tool_calls (with outputs), reply,
-    verification, blocked. Returns the record as written.
+    The shape every audit sink stores, whether a JSONL file or a database row.
     """
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "engine_version": __version__,
         **record,
     }
+    return json.loads(_redact(json.dumps(record, default=str)))
+
+
+def append_audit(record: dict, path: str | Path | None = None) -> dict:
+    """Write `record` as one JSON line, adding timestamp and engine_version if absent.
+
+    Expected keys: model, holdings_sha256, tool_calls (with outputs), reply,
+    verification, blocked. Returns the record as written.
+    """
+    record = build_record(record)
     target = Path(path) if path else AUDIT_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a", encoding="utf-8") as f:
-        f.write(_redact(json.dumps(record, default=str)) + "\n")
+        f.write(json.dumps(record) + "\n")
     return record

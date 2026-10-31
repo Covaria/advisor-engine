@@ -2,6 +2,9 @@
 
 Dev auth (an X-Dev-User header) stands in for Supabase except in the token tests, which
 sign HS256 tokens with a test secret. Nothing here reaches the network or the real API.
+
+The `api` fixture runs each test against both stores: LocalStore, and SupabaseStore on a
+fresh Postgres with the real migrations (row-level security on), using in-memory Storage.
 """
 
 import json
@@ -13,8 +16,10 @@ pytest.importorskip("fastapi")
 import jwt  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from advisor_engine.api.auth import dev_user_id  # noqa: E402
 from advisor_engine.api.main import create_app  # noqa: E402
 from advisor_engine.api.settings import Settings, load_settings  # noqa: E402
+from advisor_engine.api.store import LocalStore  # noqa: E402
 from advisor_engine.assistant._paths import DEFAULT_HOLDINGS  # noqa: E402
 from advisor_engine.assistant.tools import execute_tool  # noqa: E402
 
@@ -22,14 +27,29 @@ SUPABASE_URL = "https://example.supabase.co"
 SECRET = "test-secret-that-is-long-enough-for-hs256"
 
 
-@pytest.fixture
-def api(tmp_path):
-    app = create_app(Settings(auth="dev", store_dir=tmp_path, daily_turn_limit=5))
-    return TestClient(app), app.state.store
+@pytest.fixture(params=["local", "supabase"])
+def api(request, tmp_path):
+    if request.param == "local":
+        store = LocalStore(tmp_path)
+    else:
+        from advisor_engine.api.supabase_store import MemoryStorage, SupabaseStore
+
+        store = SupabaseStore(request.getfixturevalue("supabase_db"), MemoryStorage(),
+                              cache_dir=tmp_path / "cache")
+    app = create_app(Settings(auth="dev", store_dir=tmp_path, daily_turn_limit=5), store=store)
+    return TestClient(app), store
 
 
 def as_(user):
     return {"X-Dev-User": user}
+
+
+def session(store, user):
+    return store.as_user(dev_user_id(user), f"{user}@dev.local")
+
+
+def audit_records(store, user, firm_id):
+    return session(store, user).read_audit(firm_id)
 
 
 def setup_portfolio(client, user="alice"):
@@ -112,8 +132,8 @@ def test_turn_is_verified_saved_and_audited_with_the_adviser(api):
     assert r["tool_calls"][0]["label"] == "Risk profile"
     assert "holdings_path" not in json.dumps(r["tool_calls"])  # no server paths leak
     assert len(client.get(f"/portfolios/{p['id']}/messages", headers=as_("alice")).json()) == 2
-    rec = store.read_audit(p["firm_id"])[-1]
-    assert rec["adviser_id"] == "dev:alice" and rec["portfolio_id"] == p["id"]
+    rec = audit_records(store, "alice", p["firm_id"])[-1]
+    assert rec["adviser_id"] == dev_user_id("alice") and rec["portfolio_id"] == p["id"]
     assert rec["client_id"] == c["id"] and rec["model"] == "mock"
 
 
@@ -146,8 +166,8 @@ def test_approving_a_draft_records_who_approved(api):
     client, store = api
     r = make_draft(client)
     ok = client.post(f"/drafts/{r['draft_id']}/approve", json={"text": r["content"]}, headers=as_("alice"))
-    assert ok.status_code == 200 and ok.json()["approved_by"] == "dev:alice"
-    rec = store.read_audit(ok.json()["firm_id"])[-1]
+    assert ok.status_code == 200 and ok.json()["approved_by"] == dev_user_id("alice")
+    rec = audit_records(store, "alice", ok.json()["firm_id"])[-1]
     assert rec["event"] == "draft_approved" and rec["approved_by_email"] == "alice@dev.local"
     again = client.post(f"/drafts/{r['draft_id']}/approve", json={"text": r["content"]}, headers=as_("alice"))
     assert again.status_code == 409
@@ -186,10 +206,9 @@ def test_engine_tool_cannot_read_another_firms_file(api):
     client, store = api
     _, p = setup_portfolio(client, "alice")
     bob_firm = client.get("/me", headers=as_("bob")).json()["firm"]["id"]
-    alice_csv = store.portfolio_csv(p["firm_id"], p["id"])
-    res = execute_tool("get_risk_profile", {"holdings_path": str(alice_csv)},
-                       data_dir=store.firm_dir(bob_firm))
+    alice_csv = session(store, "alice").holdings_file(p["firm_id"], p["id"])
+    bob_dir = session(store, "bob").firm_dir(bob_firm)
+    res = execute_tool("get_risk_profile", {"holdings_path": str(alice_csv)}, data_dir=bob_dir)
     assert res.is_error and "must be inside" in res.text
     rel = f"{p['firm_id']}/portfolios/{p['id']}.csv"  # relative to the firms/ folder
-    assert execute_tool("get_risk_profile", {"holdings_path": rel},
-                        data_dir=store.firm_dir(bob_firm)).is_error
+    assert execute_tool("get_risk_profile", {"holdings_path": rel}, data_dir=bob_dir).is_error
