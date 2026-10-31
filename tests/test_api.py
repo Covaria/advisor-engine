@@ -325,3 +325,21 @@ def test_cfp_tools_respect_firm_isolation(api):
     assert client.post(f"/clients/{c['id']}/portfolios/holdings", headers=bob,
                        json={"holdings": EDITED}).status_code == 404
     assert client.get(f"/portfolios/{p['id']}/drafts", headers=bob).status_code == 404
+
+
+def test_server_errors_reach_the_browser_with_cors_headers(tmp_path):
+    """An unexpected error must still carry CORS headers, or the browser reports a
+    misleading "Failed to fetch" / access-control error instead of the real problem."""
+
+    class Broken(LocalStore):
+        def list_clients(self, firm_id):
+            raise RuntimeError("database unavailable")
+
+    app = create_app(Settings(auth="dev", store_dir=tmp_path,
+                              allowed_origins=["https://app.example.com"]),
+                     store=Broken(tmp_path))
+    r = TestClient(app, raise_server_exceptions=False).get(
+        "/clients", headers={**as_("alice"), "Origin": "https://app.example.com"})
+    assert r.status_code == 500
+    assert r.headers.get("access-control-allow-origin") == "https://app.example.com"
+    assert "database unavailable" not in r.text  # internals stay in the server log

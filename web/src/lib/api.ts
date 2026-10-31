@@ -21,6 +21,11 @@ function messageOf(detail: unknown, fallback: string): string {
   return fallback;
 }
 
+export function unreachable(origin = window.location.origin): string {
+  return `Couldn't reach the API at ${API_URL}. Check that the API is running, that VITE_API_URL ` +
+    `points to it, and that its ALLOWED_ORIGINS includes ${origin}.`;
+}
+
 export type Api = <T>(path: string, init?: { method?: string; json?: unknown; form?: FormData }) => Promise<T>;
 
 export function useApi(): Api {
@@ -34,9 +39,23 @@ export function useApi(): Api {
     } else if (init.form) {
       body = init.form;
     }
-    const res = await fetch(`${API_URL}${path}`, { method: init.method ?? (body ? "POST" : "GET"), headers: h, body });
+    let res: Response;
+    try {
+      res = await fetch(`${API_URL}${path}`, { method: init.method ?? (body ? "POST" : "GET"), headers: h, body });
+    } catch {
+      // The browser hides the reason (network down, wrong URL, or a CORS refusal), so say
+      // what to check instead of the bare "Failed to fetch".
+      throw new ApiError(0, unreachable(), null);
+    }
     const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
+    let data;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      // Typically VITE_API_URL pointing at this website: the rewrite serves index.html.
+      throw new ApiError(res.status, `The API address ${API_URL} returned a web page instead of data. ` +
+        "Check that VITE_API_URL is the API service's address, not this site's.", null);
+    }
     if (!res.ok) {
       const detail = data?.detail ?? data;
       throw new ApiError(res.status, messageOf(detail, `Request failed (${res.status})`), detail);
