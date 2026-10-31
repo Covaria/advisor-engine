@@ -2,7 +2,9 @@
 
 import { useAuth } from "./auth";
 
-export const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000";
+// Trailing slashes are dropped so paths join cleanly ("…com/" + "/clients" would be "//clients").
+export const API_URL = ((import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000")
+  .trim().replace(/\/+$/, "");
 
 export class ApiError extends Error {
   constructor(
