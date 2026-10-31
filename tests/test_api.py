@@ -343,3 +343,10 @@ def test_server_errors_reach_the_browser_with_cors_headers(tmp_path):
     assert r.status_code == 500
     assert r.headers.get("access-control-allow-origin") == "https://app.example.com"
     assert "database unavailable" not in r.text  # internals stay in the server log
+
+
+def test_allowed_origins_ignore_trailing_slashes_and_spaces(monkeypatch):
+    for k in ("ADVISOR_AUTH", "SUPABASE_URL", "SUPABASE_DB_URL", "RENDER"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ALLOWED_ORIGINS", " https://galtonks.onrender.com/ , http://localhost:5173")
+    assert load_settings().allowed_origins == ["https://galtonks.onrender.com", "http://localhost:5173"]

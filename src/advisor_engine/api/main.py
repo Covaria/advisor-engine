@@ -150,6 +150,8 @@ def create_app(settings: Settings | None = None, store=None) -> FastAPI:
             return JSONResponse({"detail": "Server error. It has been logged; please try again."},
                                 status_code=500)
 
+    # In the deploy log, so a CORS mismatch is visible without guessing.
+    log_.warning("CORS allowed origins: %s", ", ".join(settings.allowed_origins) or "(none)")
     app.add_middleware(
         CORSMiddleware, allow_origins=settings.allowed_origins, allow_credentials=True,
         allow_methods=["*"], allow_headers=["Authorization", "Content-Type", "X-Dev-User"],

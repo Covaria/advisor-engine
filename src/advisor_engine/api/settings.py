@@ -59,7 +59,10 @@ def load_settings() -> Settings:
         raise RuntimeError("On Render, set SUPABASE_DB_URL: the local store is wiped on deploy.")
     if db_url and not (supabase_url and secret_key):
         raise RuntimeError("SUPABASE_DB_URL also needs SUPABASE_URL and SUPABASE_SECRET_KEY.")
-    origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    # Browsers send the origin with no trailing slash ("https://app.example.com"), and CORS
+    # compares it exactly, so "https://app.example.com/" would silently never match.
+    origins = [o.strip().rstrip("/") for o in os.environ.get("ALLOWED_ORIGINS", "").split(",")
+               if o.strip().rstrip("/")]
     return Settings(
         auth=auth,
         store_dir=Path(os.environ.get("ADVISOR_API_STORE", DATA_DIR / "api")),
