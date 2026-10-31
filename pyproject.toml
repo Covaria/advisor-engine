@@ -14,9 +14,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
 llm = ["anthropic>=0.40", "python-dotenv>=1.0"]
 ui = ["streamlit>=1.35"]
+api = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "python-multipart>=0.0.9", "pyjwt[crypto]>=2.8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

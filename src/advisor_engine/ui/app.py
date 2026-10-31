@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 
 import altair as alt
 import pandas as pd
@@ -65,9 +66,10 @@ def rel(p) -> str:
     return str(p.relative_to(REPO_ROOT))
 
 
-def portfolio_files() -> list[str]:
+def portfolio_files(upload_dir) -> list[str]:
+    """Sample portfolios plus this session's own uploads, never other visitors' files."""
     files = sorted(SAMPLE_DIR.glob("*.csv")) + (
-        sorted(UPLOAD_DIR.glob("*.csv")) if UPLOAD_DIR.is_dir() else []
+        sorted(upload_dir.glob("*.csv")) if upload_dir.is_dir() else []
     )
     return [rel(p) for p in files]
 
@@ -79,13 +81,16 @@ def engine_profile(path: str, mtime: float) -> tuple[str, bool, str | None]:
     return res.text, res.is_error, res.holdings_sha256
 
 
-def save_upload(upload) -> tuple[str | None, str | None]:
-    """Save a CSV to data/uploads/ if load_holdings accepts it. Returns (path, error)."""
+def save_upload(upload, upload_dir) -> tuple[str | None, str | None]:
+    """Save a CSV to this session's upload folder if load_holdings accepts it.
+
+    Returns (path, error).
+    """
     name = re.sub(r"[^\w.-]", "_", upload.name)
     if not name.lower().endswith(".csv"):
         return None, "The file must be a .csv."
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    target = UPLOAD_DIR / name
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / name
     existed = target.exists()
     backup = target.read_bytes() if existed else None
     target.write_bytes(upload.getvalue())
@@ -174,6 +179,10 @@ ss.setdefault("history", [])
 ss.setdefault("draft", None)
 ss.setdefault("viewed", set())
 ss.setdefault("handled_upload", None)
+# Uploads go to a folder named by a random per-session id, so on a shared deployment
+# one visitor's files are never listed for another. The id is unguessable, which also
+# keeps the assistant (whose path guard allows all of data/) from being pointed at them.
+ss.setdefault("session_dir", UPLOAD_DIR / uuid.uuid4().hex)
 
 try:
     mode = llm_mode()
@@ -190,19 +199,19 @@ with st.sidebar:
     st.header("Portfolio")
     picker = st.container()
     with st.expander("Upload a holdings CSV"):
-        st.caption("Columns: ticker, shares, price, sector. Saved to data/uploads/ (gitignored).")
+        st.caption("Columns: ticker, shares, price, sector. Visible only in this browser session.")
         upload = st.file_uploader("CSV file", type="csv", label_visibility="collapsed")
         if upload is not None:
             token = (upload.name, hashlib.sha256(upload.getvalue()).hexdigest())
             if token != ss.handled_upload:
                 ss.handled_upload = token
-                saved, err = save_upload(upload)
+                saved, err = save_upload(upload, ss.session_dir)
                 if err:
                     st.error(err)
                 else:
                     ss.portfolio = saved
                     st.success(f"Loaded {upload.name}.")
-    options = portfolio_files()
+    options = portfolio_files(ss.session_dir)
     default = rel(DEFAULT_HOLDINGS)
     if ss.get("portfolio") not in options:
         ss.portfolio = default if default in options else options[0]

@@ -105,8 +105,13 @@ def run_turn(
     audit_path: str | Path | None = None,
     data_dir: Path | None = None,
     returns_fn=None,
+    audit_extra: dict | None = None,
 ) -> TurnResult:
-    """Answer one user message. `history` is the `.history` of the previous result."""
+    """Answer one user message. `history` is the `.history` of the previous result.
+
+    `audit_extra` is merged into the audit record (e.g. who asked, for which firm); it
+    cannot overwrite the turn's own fields.
+    """
     _load_env()
     client = client or _make_client()
     # A client may name itself (the mock does), so the audit log never claims a real model.
@@ -193,6 +198,7 @@ def run_turn(
 
     append_audit(
         {
+            **(audit_extra or {}),
             "model": model,
             "holdings_sha256": holdings_sha,
             "user_message": user_message,

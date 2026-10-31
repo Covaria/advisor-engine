@@ -78,7 +78,8 @@ streamlit run src/advisor_engine/ui/app.py
 
 The app opens at http://localhost:8501. A banner shows the mode (MOCK or LIVE) and that the
 data is synthetic. Pick or upload a portfolio in the sidebar (uploads are validated and saved
-to `data/uploads/`, which is gitignored), ask questions, and open "How this was checked" under
+to a per-session folder under `data/uploads/`, which is gitignored, so visitors never see
+each other's files), ask questions, and open "How this was checked" under
 any reply to see the engine output and the verification result. "Simulate invented number"
 makes the mock add a figure the engine never produced, so you can watch the reply get
 withheld. "Draft client explanation" produces an editable DRAFT; Approve records it in the
@@ -100,6 +101,18 @@ WebSockets). Streamlit Community Cloud can:
    live mode for anyone with the link, and there is no sign-in yet.
 
 The audit log and uploads are written to the app's disk, which is wiped on restart.
+
+## API (for the React app, in progress)
+
+```bash
+pip install -e ".[dev,llm,api]"
+uvicorn advisor_engine.api.main:app --reload
+```
+
+Locally it runs with dev auth: send `X-Dev-User: <any name>` instead of signing in. Dev
+auth always uses the mock assistant. Setting `SUPABASE_URL` switches to Supabase sign-in
+(plus `SUPABASE_JWT_SECRET` on projects that still use the legacy shared secret). Data is
+stored per firm under `data/api/`. See `docs/migration-plan.md` for the full plan.
 
 ## Layout
 

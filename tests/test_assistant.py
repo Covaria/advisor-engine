@@ -333,3 +333,10 @@ def test_system_prompt_style_rules():
     assert "how much risk it adds relative to its size" in p
     assert "how closely it moves with the rest" in p
     assert "period_label" in p
+
+
+def test_audit_extra_is_recorded_but_cannot_overwrite_turn_fields(tmp_path):
+    client = FakeClient([[tool_block()], [text_block(good_reply())]])
+    run(client, tmp_path, audit_extra={"adviser_id": "u1", "blocked": "spoofed"})
+    rec = audit_lines(tmp_path)[-1]
+    assert rec["adviser_id"] == "u1" and rec["blocked"] is False

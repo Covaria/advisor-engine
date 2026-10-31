@@ -97,3 +97,26 @@ def test_uploaded_names_are_escaped_in_html():
 
     out = theme.card("<b>x</b>", "1.0", "<script>alert(1)</script>")
     assert "<script>" not in out and "&lt;script&gt;" in out
+
+
+def test_other_visitors_uploads_are_not_listed(app):
+    import shutil
+    import uuid
+
+    from advisor_engine.assistant._paths import DATA_DIR, DEFAULT_HOLDINGS
+
+    uploads = DATA_DIR / "uploads"
+    name = f"someone_elses_client_{uuid.uuid4().hex}"
+    other_session = uploads / uuid.uuid4().hex
+    other_session.mkdir(parents=True)
+    # Where the old shared folder kept uploads, and where another session keeps them now.
+    planted = [uploads / f"{name}.csv", other_session / f"{name}.csv"]
+    try:
+        for f in planted:
+            shutil.copy(DEFAULT_HOLDINGS, f)
+        at, _ = app
+        at.run()
+        assert not any(name in o for o in at.selectbox[0].options)
+    finally:
+        planted[0].unlink(missing_ok=True)
+        shutil.rmtree(other_session)
